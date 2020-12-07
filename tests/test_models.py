@@ -60,7 +60,7 @@ def test_answered(aocd_dir):
     assert puzzle.answered("a") is False
     assert puzzle.answered_b is True
     assert puzzle.answered("b") is True
-    expected = AocdError("part must be 'a' or 'b'")
+    expected = AocdError('part must be "a" or "b"')
     with pytest.raises(expected):
         puzzle.answered("c")
 
