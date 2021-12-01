@@ -15,12 +15,12 @@ from argparse import ArgumentParser
 from collections import OrderedDict
 from datetime import datetime
 
-import pebble
+import pebble.concurrent
 import pkg_resources
 from termcolor import colored
 
 from .exceptions import AocdError
-from .models import AOCD_DIR
+from .models import AOCD_CONFIG_DIR
 from .models import default_user
 from .models import Puzzle
 from .utils import AOC_TZ
@@ -40,24 +40,22 @@ def main():
     aoc_now = datetime.now(tz=AOC_TZ)
     years = range(2015, aoc_now.year + int(aoc_now.month == 12))
     days = range(1, 26)
-    path = os.path.join(AOCD_DIR, "tokens.json")
-    try:
-        with open(path) as f:
-            users = json.load(f)
-    except IOError:
-        users = {"default": default_user().token}
+    users = _load_users()
     log_levels = "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"
     parser = ArgumentParser(description="AoC runner")
-    parser.add_argument("-p", "--plugins", choices=plugins)
+    parser.add_argument("-p", "--plugins", nargs="+", choices=plugins)
     parser.add_argument("-y", "--years", type=int, nargs="+", choices=years)
     parser.add_argument("-d", "--days", type=int, nargs="+", choices=days)
     parser.add_argument("-u", "--users", nargs="+", choices=users)
     parser.add_argument("-t", "--timeout", type=int, default=DEFAULT_TIMEOUT)
     parser.add_argument("-s", "--no-submit", action="store_true", help="disable autosubmit")
     parser.add_argument("-r", "--reopen", action="store_true", help="open browser on NEW solves")
+    parser.add_argument("-q", "--quiet", action="store_true", help="capture output from runner")
     parser.add_argument("--log-level", default="WARNING", choices=log_levels)
     args = parser.parse_args()
+
     if not users:
+        path = os.path.join(AOCD_CONFIG_DIR, "tokens.json")
         print(
             "There are no datasets available to use.\n"
             "Either export your AOC_SESSION or put some auth "
@@ -73,7 +71,7 @@ def main():
         )
         sys.exit(1)
     logging.basicConfig(level=getattr(logging, args.log_level))
-    run_for(
+    rc = run_for(
         plugins=args.plugins or list(plugins),
         years=args.years or years,
         days=args.days or days,
@@ -81,36 +79,57 @@ def main():
         timeout=args.timeout,
         autosubmit=not args.no_submit,
         reopen=args.reopen,
+        capture=args.quiet,
     )
+    sys.exit(rc)
 
 
-def run_with_timeout(entry_point, timeout, progress, dt=0.1, **kwargs):
-    # TODO : multi-process over the different tokens
+def _timeout_wrapper(f, capture=False, timeout=DEFAULT_TIMEOUT, *args, **kwargs):
+    func = pebble.concurrent.process(daemon=False, timeout=timeout)(_process_wrapper)
+    return func(f, capture, *args, **kwargs)
+
+
+def _process_wrapper(f, capture=False, *args, **kwargs):
+    # allows to run f in a process which can be killed if it misbehaves
+    prev_stdout = sys.stdout
+    prev_stderr = sys.stderr
+    if capture:
+        hush = open(os.devnull, "w")
+        sys.stdout = sys.stderr = hush
+    try:
+        result = f(*args, **kwargs)
+    finally:
+        if capture:
+            sys.stdout = prev_stdout
+            sys.stderr = prev_stderr
+            hush.close()
+    return result
+
+
+def run_with_timeout(entry_point, timeout, progress, dt=0.1, capture=False, **kwargs):
     spinner = itertools.cycle(r"\|/-")
-    pool = pebble.ProcessPool(max_workers=1)
     line = elapsed = format_time(0)
-    with pool:
-        t0 = time.time()
-        func = entry_point.load()
-        future = pool.schedule(func, kwargs=kwargs, timeout=timeout)
-        while not future.done():
-            if progress is not None:
-                line = "\r" + elapsed + "   " + progress + "   " + next(spinner)
-                sys.stderr.write(line)
-                sys.stderr.flush()
-            time.sleep(dt)
-            elapsed = format_time(time.time() - t0, timeout)
-        walltime = time.time() - t0
-        try:
-            a, b = future.result()
-        except Exception as err:
-            a = b = ""
-            error = repr(err)[:50]
-        else:
-            error = ""
-            # longest correct answer seen so far has been 32 chars
-            a = str(a)[:50]
-            b = str(b)[:50]
+    t0 = time.time()
+    func = entry_point.load()
+    future = _timeout_wrapper(func, capture=capture, timeout=timeout, **kwargs)
+    while not future.done():
+        if progress is not None:
+            line = "\r" + elapsed + "   " + progress + "   " + next(spinner)
+            sys.stderr.write(line)
+            sys.stderr.flush()
+        time.sleep(dt)
+        elapsed = format_time(time.time() - t0, timeout)
+    walltime = time.time() - t0
+    try:
+        a, b = future.result()
+    except Exception as err:
+        a = b = ""
+        error = repr(err)[:50]
+    else:
+        error = ""
+        # longest correct answer seen so far has been 32 chars
+        a = str(a)[:50]
+        b = str(b)[:50]
     if progress is not None:
         sys.stderr.write("\r" + " " * len(line) + "\r")
         sys.stderr.flush()
@@ -128,7 +147,7 @@ def format_time(t, timeout=DEFAULT_TIMEOUT):
     return runtime
 
 
-def run_one(year, day, input_data, entry_point, timeout=DEFAULT_TIMEOUT, progress=None):
+def run_one(year, day, input_data, entry_point, timeout=DEFAULT_TIMEOUT, progress=None, capture=False):
     prev = os.getcwd()
     scratch = tempfile.mkdtemp(prefix="{}-{:02d}-".format(year, day))
     os.chdir(scratch)
@@ -143,21 +162,26 @@ def run_one(year, day, input_data, entry_point, timeout=DEFAULT_TIMEOUT, progres
             day=day,
             data=input_data,
             progress=progress,
+            capture=capture,
         )
     finally:
         os.unlink("input.txt")
         os.chdir(prev)
-        os.rmdir(scratch)
+        try:
+            os.rmdir(scratch)
+        except Exception as err:
+            log.warning("failed to remove scratch %s (%s: %s)", scratch, type(err), err)
     return a, b, walltime, error
 
 
-def run_for(plugins, years, days, datasets, timeout=DEFAULT_TIMEOUT, autosubmit=True, reopen=False):
+def run_for(plugins, years, days, datasets, timeout=DEFAULT_TIMEOUT, autosubmit=True, reopen=False, capture=False):
     aoc_now = datetime.now(tz=AOC_TZ)
     all_entry_points = pkg_resources.iter_entry_points(group="adventofcode.user")
     entry_points = {ep.name: ep for ep in all_entry_points if ep.name in plugins}
     it = itertools.product(years, days, plugins, datasets)
     userpad = 3
     datasetpad = 8
+    n_incorrect = 0
     if entry_points:
         userpad = len(max(entry_points, key=len))
     if datasets:
@@ -180,12 +204,14 @@ def run_for(plugins, years, days, datasets, timeout=DEFAULT_TIMEOUT, autosubmit=
             entry_point=entry_point,
             timeout=timeout,
             progress=progress,
+            capture=capture,
         )
         runtime = format_time(walltime, timeout)
         line = "   ".join([runtime, progress])
         if error:
             assert a == b == ""
             icon = colored("✖", "red")
+            n_incorrect += 1
             line += "   {icon} {error}".format(icon=icon, error=error)
         else:
             result_template = "   {icon} part {part}: {answer}"
@@ -197,7 +223,7 @@ def run_for(plugins, years, days, datasets, timeout=DEFAULT_TIMEOUT, autosubmit=
                 try:
                     expected = getattr(puzzle, "answer_" + part)
                 except AttributeError:
-                    post = part == "a" or (part == "b" and hasattr(puzzle, "answer_a"))
+                    post = part == "a" or (part == "b" and puzzle.answered_a)
                     if autosubmit and post:
                         try:
                             puzzle._submit(answer, part, reopen=reopen, quiet=True)
@@ -211,6 +237,7 @@ def run_for(plugins, years, days, datasets, timeout=DEFAULT_TIMEOUT, autosubmit=
                 icon = colored("✔", "green") if correct else colored("✖", "red")
                 correction = ""
                 if not correct:
+                    n_incorrect += 1
                     if expected is None:
                         icon = colored("?", "magenta")
                         correction = "(correct answer unknown)"
@@ -221,3 +248,14 @@ def run_for(plugins, years, days, datasets, timeout=DEFAULT_TIMEOUT, autosubmit=
                     answer = answer.ljust(30)
                 line += result_template.format(icon=icon, part=part, answer=answer)
         print(line)
+    return n_incorrect
+
+
+def _load_users():
+    path = os.path.join(AOCD_CONFIG_DIR, "tokens.json")
+    try:
+        with open(path) as f:
+            users = json.load(f)
+    except IOError:
+        users = {"default": default_user().token}
+    return users

@@ -6,6 +6,7 @@ from __future__ import unicode_literals
 
 import errno
 import io
+import json
 import logging
 import os
 import re
@@ -26,28 +27,63 @@ from .exceptions import AocdError
 from .exceptions import PuzzleUnsolvedError
 from .exceptions import PuzzleLockedError
 from .utils import AOC_TZ
+from .utils import _ensure_intermediate_dirs
+from .utils import get_owner
 from .version import __version__
 
 
 log = logging.getLogger(__name__)
 
-
-AOCD_DIR = os.path.expanduser(os.environ.get("AOCD_DIR", os.path.join("~", ".config", "aocd")))
+AOCD_DATA_DIR = os.path.expanduser(os.environ.get("AOCD_DIR", os.path.join("~", ".config", "aocd")))
+AOCD_CONFIG_DIR = os.path.expanduser(os.environ.get("AOCD_CONFIG_DIR", AOCD_DATA_DIR))
 URL = "https://adventofcode.com/{year}/day/{day}"
 USER_AGENT = {"User-Agent": "advent-of-code-data v{}".format(__version__)}
 
 
 class User(object):
+
+    _token2id = None
+
     def __init__(self, token):
         self.token = token
+        self._owner = "unknown.unknown.0"
 
     @property
     def auth(self):
         return {"session": self.token}
 
     @property
+    def id(self):
+        fname = os.path.join(AOCD_CONFIG_DIR, "token2id.json")
+        if User._token2id is None:
+            try:
+                with io.open(fname, encoding="utf-8") as f:
+                    log.debug("loading user id memo from %s", fname)
+                    User._token2id = json.load(f)
+            except (IOError, OSError) as err:
+                if err.errno != errno.ENOENT:
+                    raise
+                User._token2id = {}
+        if self.token not in User._token2id:
+            log.debug("token not found in memo, attempting to determine user id")
+            owner = get_owner(self.token)
+            log.debug("got owner=%s, adding to memo", owner)
+            User._token2id[self.token] = owner
+            _ensure_intermediate_dirs(fname)
+            with open(fname, "w") as f:
+                json.dump(User._token2id, f, sort_keys=True, indent=2)
+        else:
+            owner = User._token2id[self.token]
+        if self._owner == "unknown.unknown.0":
+            self._owner = owner
+        return owner
+
+    def __str__(self):
+        return "<{} {} (token=...{})>".format(type(self).__name__, self._owner, self.token[-4:])
+
+    @property
     def memo_dir(self):
-        return os.path.join(AOCD_DIR, self.token)
+        return os.path.join(AOCD_DATA_DIR, self.id)
 
     def get_stats(self, years=None):
         aoc_now = datetime.now(tz=AOC_TZ)
@@ -92,7 +128,7 @@ def default_user():
 
     # or chuck it in a plaintext file at ~/.config/aocd/token
     try:
-        with io.open(os.path.join(AOCD_DIR, "token"), encoding="utf-8") as f:
+        with io.open(os.path.join(AOCD_CONFIG_DIR, "token"), encoding="utf-8") as f:
             cookie = f.read().split()[0]
     except (IOError, OSError) as err:
         if err.errno != errno.ENOENT:
@@ -110,7 +146,7 @@ def default_user():
         See https://github.com/wimglenn/advent-of-code-wim/issues/1 for more info.
         """
     )
-    cprint(msg.format(os.path.join(AOCD_DIR, "token")), color="red", file=sys.stderr)
+    cprint(msg.format(os.path.join(AOCD_CONFIG_DIR, "token")), color="red", file=sys.stderr)
     raise AocdError("Missing session ID")
 
 
@@ -123,14 +159,15 @@ class Puzzle(object):
         self._user = user
         self.input_data_url = self.url + "/input"
         self.submit_url = self.url + "/answer"
-        prefix = self.user.memo_dir + "/{}_{:02d}".format(self.year, self.day)
+        fname = "{}_{:02d}".format(self.year, self.day)
+        prefix = os.path.join(self.user.memo_dir, fname)
         self.input_data_fname = prefix + "_input.txt"
         self.answer_a_fname = prefix + "a_answer.txt"
         self.answer_b_fname = prefix + "b_answer.txt"
         self.incorrect_answers_a_fname = prefix + "a_bad_answers.txt"
         self.incorrect_answers_b_fname = prefix + "b_bad_answers.txt"
         self.title_fname = os.path.join(
-            AOCD_DIR,
+            AOCD_DATA_DIR,
             "titles",
             "{}_{:02d}.txt".format(self.year, self.day)
         )
@@ -196,7 +233,7 @@ class Puzzle(object):
         try:
             return self._get_answer(part="a")
         except PuzzleUnsolvedError:
-            raise AttributeError
+            raise AttributeError("answer_a")
 
     @answer_a.setter
     def answer_a(self, val):
@@ -215,7 +252,7 @@ class Puzzle(object):
         try:
             return self._get_answer(part="b")
         except PuzzleUnsolvedError:
-            raise AttributeError
+            raise AttributeError("answer_b")
 
     @answer_b.setter
     def answer_b(self, val):
@@ -256,9 +293,9 @@ class Puzzle(object):
         if value in {u"", b"", None, b"None", u"None"}:
             raise AocdError("cowardly refusing to submit non-answer: {!r}".format(value))
         value = str(value)
-        if part not in {"A", "B", "a", "b"}:
+        part = str(part).replace("1", "a").replace("2", "b").lower()
+        if part not in {"a", "b"}:
             raise AocdError('part must be "a" or "b"')
-        part = part.lower()
         bad_guesses = getattr(self, "incorrect_answers_" + part)
         if value in bad_guesses:
             if not quiet:
@@ -272,7 +309,10 @@ class Puzzle(object):
         sanitized = "..." + self.user.token[-4:]
         check_guess = self._check_guess_against_existing(value, part)
         if check_guess is not None:
-            print(check_guess)
+            if quiet:
+                log.info(check_guess)
+            else:
+                print(check_guess)
             return
         log.info("posting %r to %s (part %s) token=%s", value, url, part, sanitized)
         level = {"a": 1, "b": 2}[part]
@@ -293,16 +333,20 @@ class Puzzle(object):
             color = "green"
             if reopen:
                 # So you can read part B on the website...
-                webbrowser.open(response.url)
+                part_b_url = self.url + "#part2"
+                log.info("reopening to %s", part_b_url)
+                webbrowser.open(part_b_url)
             if not (self.day == 25 and part == "b"):
                 self._save_correct_answer(value=value, part=part)
             if self.day == 25 and part == "a":
-                log.debug("checking if got 49 stars already...")
+                log.debug("checking if got 49 stars already for year %s...", self.year)
                 my_stats = self.user.get_stats(self.year)
                 n_stars = sum(len(val) for val in my_stats.values())
                 if n_stars == 49:
                     log.info("Got 49 stars already, getting 50th...")
                     self._submit(value="done", part="b", reopen=reopen, quiet=quiet)
+                else:
+                    log.info("Got %d stars, need %d more for part b", n_stars, 49 - n_stars)
         elif "Did you already complete it" in message:
             color = "yellow"
         elif "That's not the right answer" in message:
@@ -350,7 +394,16 @@ class Puzzle(object):
         fname = getattr(self, "answer_{}_fname".format(part))
         _ensure_intermediate_dirs(fname)
         txt = value.strip()
-        msg = "saving the correct answer for %d/%02d part %s: %s"
+        msg = "saving"
+        if os.path.isfile(fname):
+            with open(fname) as f:
+                prev = f.read()
+            if txt == prev:
+                msg = "the correct answer for %d/%02d part %s was already saved"
+                log.debug(msg, self.year, self.day, part)
+                return
+            msg = "overwriting"
+        msg += " the correct answer for %d/%02d part %s: %s"
         log.info(msg, self.year, self.day, part, txt)
         with open(fname, "w") as f:
             f.write(txt)
@@ -474,14 +527,3 @@ def _parse_duration(s):
     return timedelta(hours=h, minutes=m, seconds=s)
 
 
-def _ensure_intermediate_dirs(fname):
-    parent = os.path.dirname(fname)
-    try:
-        os.makedirs(parent, exist_ok=True)
-    except TypeError:
-        # exist_ok not avail on Python 2
-        try:
-            os.makedirs(parent)
-        except (IOError, OSError) as err:
-            if err.errno != errno.EEXIST:
-                raise

@@ -1,7 +1,7 @@
 Advent of Code data
 ===================
 
-|pyversions|_ |pypi|_ |womm|_ |travis|_ |coveralls|_
+|pyversions|_ |pypi|_ |womm|_ |actions|_ |codecov|_
 
 .. |pyversions| image:: https://img.shields.io/pypi/pyversions/advent-of-code-data.svg
 .. _pyversions: 
@@ -12,11 +12,11 @@ Advent of Code data
 .. |womm| image:: https://cdn.rawgit.com/nikku/works-on-my-machine/v0.2.0/badge.svg
 .. _womm: https://github.com/nikku/works-on-my-machine
 
-.. |travis| image:: https://img.shields.io/travis/wimglenn/advent-of-code-data.svg?branch=master
-.. _travis: https://travis-ci.com/wimglenn/advent-of-code-data
+.. |actions| image:: https://github.com/wimglenn/advent-of-code-data/actions/workflows/tests.yml/badge.svg
+.. _actions: https://github.com/wimglenn/advent-of-code-data/actions/workflows/tests.yml
 
-.. |coveralls| image:: https://coveralls.io/repos/github/wimglenn/advent-of-code-data/badge.svg?branch=master
-.. _coveralls: https://coveralls.io/github/wimglenn/advent-of-code-data?branch=master
+.. |codecov| image:: https://codecov.io/gh/wimglenn/advent-of-code-data/branch/master/graph/badge.svg
+.. _codecov: https://codecov.io/gh/wimglenn/advent-of-code-data
 
 
 Get your puzzle data with a single import statement:
@@ -69,8 +69,9 @@ your browser inspector.  If you're hacking on AoC at all you probably already
 know these kind of tricks, but if you need help with that part then you can
 `look here <https://github.com/wimglenn/advent-of-code/issues/1>`_.
 
-*Note:* If you don't like the env var, you could also put into a text file
-in your home directory (use the filename ``~/.config/aocd/token``).
+*Note:* If you don't like the env var, you could also keep your token(s) in files.
+By default the location is ``~/.config/aocd/token``. Set the ``AOCD_DIR`` environment
+variable to some existing directory if you wish to use another location to store token(s).
 
 *New in version 0.9.0.* There's a utility script ``aocd-token`` which attempts to
 find session tokens from your browser's cookie storage. This feature is experimental
@@ -79,6 +80,12 @@ and Firefox browsers are currently supported. On macOS, you may get an authentic
 dialog requesting permission, since Python is attempting to read browser storage files.
 This is expected, the script *is* actually scraping those private files to access AoC
 session token(s).
+
+If this utility script was able to locate your token, you can save it to file with:
+
+.. code-block:: bash
+
+   $ aocd-token > ~/.config/aocd/token
 
 Automated submission
 --------------------
@@ -163,6 +170,8 @@ As you can see above, I actually had incorrect code for `2017 Day 20: Particle S
 
 By the way, the ``aoc`` runner will kill your code if it takes more than 60 seconds, you can increase/decrease this by passing a command-line option, e.g. ``--timeout=120``.
 
+*New in version 1.1.0:*  Added option ``--quiet`` to suppress any output from plugins so it doesn't mess up the ``aoc`` runner's display.
+
 
 How does this library work?
 ---------------------------
@@ -203,3 +212,7 @@ All data is persisted in plain text files under ``~/.config/aocd``. To remove an
 caches, you may simply delete whatever files you want under that directory tree.
 If you'd prefer to use a different path, then export an ``AOCD_DIR`` environment
 variable with the desired location.
+
+*New in version 1.1.0:* By default, your token files are also stored under ``~/.config/aocd``.
+If you want the token(s) and cached inputs/answers to exist in separate locations, you can set
+the environment variable ``AOCD_CONFIG_DIR`` to specify a different location for the token(s).

@@ -27,8 +27,8 @@ def test_no_plugins_avail(capsys, mocker):
     mock.assert_called_once_with(group="adventofcode.user")
 
 
-def test_no_datasets_avail(capsys, mocker, aocd_dir):
-    datasets_file = aocd_dir / "tokens.json"
+def test_no_datasets_avail(capsys, mocker, aocd_config_dir):
+    datasets_file = aocd_config_dir / "tokens.json"
     datasets_file.write_text("{}")
     mocker.patch("sys.argv", ["aoc"])
     msg = (
@@ -43,17 +43,18 @@ def test_no_datasets_avail(capsys, mocker, aocd_dir):
     assert msg in err
 
 
-def test_main(capsys, mocker, aocd_dir):
-    mock = mocker.patch("aocd.runner.run_for")
+def test_main(capsys, mocker, aocd_config_dir):
+    mock = mocker.patch("aocd.runner.run_for", return_value=0)
     ep1 = mocker.Mock()
     ep1.name = "user1"
     ep2 = mocker.Mock()
     ep2.name = "user2"
     mocker.patch("pkg_resources.iter_entry_points", return_value=iter([ep1, ep2]))
-    datasets_file = aocd_dir / "tokens.json"
+    datasets_file = aocd_config_dir / "tokens.json"
     datasets_file.write_text('{"data1": "token1", "data2": "token2"}')
     mocker.patch("sys.argv", ["aoc", "--years=2015", "--days", "3", "7"])
-    main()
+    with pytest.raises(SystemExit(0)):
+        main()
     mock.assert_called_once_with(
         plugins=["user1", "user2"],
         years=[2015],
@@ -62,6 +63,7 @@ def test_main(capsys, mocker, aocd_dir):
         timeout=60,
         autosubmit=True,
         reopen=False,
+        capture=False,
     )
 
 
@@ -86,8 +88,7 @@ def bugged_entry_point(year, day, data):
 def test_results(mocker, capsys):
     ep = mocker.Mock()
     ep.name = "testuser"
-    worker = ep.load.return_value = fake_entry_point
-    # worker = ep.load.return_value = lambda year, day, data: ("answer1", "wrong")  # TODO: why doesn't that work?
+    ep.load.return_value = fake_entry_point
     mocker.patch("pkg_resources.iter_entry_points", return_value=iter([ep]))
     fake_puzzle = mocker.MagicMock()
     fake_puzzle.year = 2015
@@ -174,14 +175,14 @@ def test_day_out_of_range(mocker, capsys, freezer):
     assert out == err == ""
 
 
-def test_run_error(aocd_dir, mocker, capsys):
-    title_path = aocd_dir / "titles"
+def test_run_error(aocd_data_dir, mocker, capsys):
+    title_path = aocd_data_dir / "titles"
     title_path.mkdir()
     title_file = title_path / "2018_25.txt"
     title_file.write_text("The Puzzle Title")
-    input_path = aocd_dir / "thetesttoken" / "2018_25_input.txt"
+    input_path = aocd_data_dir / "testauth.testuser.000" / "2018_25_input.txt"
     input_path.write_text("someinput")
-    answer_path = aocd_dir / "thetesttoken" / "2018_25a_answer.txt"
+    answer_path = aocd_data_dir / "testauth.testuser.000" / "2018_25a_answer.txt"
     answer_path.write_text("answ")
     ep = mocker.Mock()
     ep.name = "testuser"
@@ -200,14 +201,14 @@ def test_run_error(aocd_dir, mocker, capsys):
     assert "part b" not in out  # because it's 25 dec, no part b puzzle
 
 
-def test_run_and_autosubmit(aocd_dir, mocker, capsys, requests_mock):
-    title_path = aocd_dir / "titles"
+def test_run_and_autosubmit(aocd_data_dir, mocker, capsys, requests_mock):
+    title_path = aocd_data_dir / "titles"
     title_path.mkdir()
     title_file = title_path / "2015_01.txt"
     title_file.write_text("The Puzzle Title")
-    input_path = aocd_dir / "thetesttoken" / "2015_01_input.txt"
+    input_path = aocd_data_dir / "testauth.testuser.000" / "2015_01_input.txt"
     input_path.write_text("testinput")
-    answer_path = aocd_dir / "thetesttoken" / "2015_01a_answer.txt"
+    answer_path = aocd_data_dir / "testauth.testuser.000" / "2015_01a_answer.txt"
     answer_path.write_text("answer1")
     requests_mock.get(url="https://adventofcode.com/2015/day/1")
     requests_mock.post(
@@ -229,14 +230,14 @@ def test_run_and_autosubmit(aocd_dir, mocker, capsys, requests_mock):
     assert "part b: wrong (correct answer unknown)" in out
 
 
-def test_run_and_no_autosubmit(aocd_dir, mocker, capsys, requests_mock):
-    title_path = aocd_dir / "titles"
+def test_run_and_no_autosubmit(aocd_data_dir, mocker, capsys, requests_mock):
+    title_path = aocd_data_dir / "titles"
     title_path.mkdir()
     title_file = title_path / "2015_01.txt"
     title_file.write_text("The Puzzle Title")
-    input_path = aocd_dir / "thetesttoken" / "2015_01_input.txt"
+    input_path = aocd_data_dir / "testauth.testuser.000" / "2015_01_input.txt"
     input_path.write_text("testinput")
-    answer_path = aocd_dir / "thetesttoken" / "2015_01a_answer.txt"
+    answer_path = aocd_data_dir / "testauth.testuser.000" / "2015_01a_answer.txt"
     answer_path.write_text("answer1")
     requests_mock.get(url="https://adventofcode.com/2015/day/1")
     ep = mocker.Mock()
@@ -271,5 +272,5 @@ def test_load_input_from_file(mocker):
     a, b, walltime, error = run_one(2015, 1, "abcxyz", ep)
     assert a == "123"
     assert b == "456"
-    assert 0 < walltime < 2
+    assert 0 < walltime < 60
     assert not error
