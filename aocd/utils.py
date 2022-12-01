@@ -1,9 +1,12 @@
+import argparse
 import bs4
 import errno
 import logging
 import os
 import requests
+import shutil
 import sys
+import tempfile
 import time
 import tzlocal
 from datetime import datetime
@@ -89,7 +92,7 @@ def get_owner(token):
     soup = bs4.BeautifulSoup(response.text, "html.parser")
     auth_source = "unknown"
     username = "unknown"
-    userid = soup.code.text.split("-")[0]
+    userid = soup.code.text.split("-")[1]
     for span in soup.find_all("span"):
         if span.text.startswith("Link to "):
             auth_source = span.text[8:]
@@ -108,4 +111,28 @@ def get_owner(token):
                 username = span.text
                 break
     result = ".".join([auth_source, username, userid])
+    return result
+
+
+def atomic_write_file(fname, contents_str):
+    """Atomically write a string to a file by writing it to a temporary file, and then
+    renaming it to the final destination name. This solves a race condition where existence
+    of a file doesn't necessarily mean the contents are all correct yet."""
+    _ensure_intermediate_dirs(fname)
+    with tempfile.NamedTemporaryFile(mode="w", dir=os.path.dirname(fname), delete=False) as f:
+        log.debug("writing to tempfile @ %s", f.name)
+        f.write(contents_str)
+    log.debug("moving %s -> %s", f.name, fname)
+    shutil.move(f.name, fname)
+
+
+def _cli_guess(choice, choices):
+    if choice in choices:
+        return choice
+    candidates = [c for c in choices if choice in c]
+    if len(candidates) > 1:
+        raise argparse.ArgumentTypeError("{} ambiguous (could be {})".format(choice, ", ".join(candidates)))
+    elif not candidates:
+        raise argparse.ArgumentTypeError("invalid choice {!r} (choose from {})".format(choice, ", ".join(choices)))
+    [result] = candidates
     return result

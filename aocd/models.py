@@ -24,10 +24,13 @@ from termcolor import colored
 from termcolor import cprint
 
 from .exceptions import AocdError
+from .exceptions import DeadTokenError
+from .exceptions import UnknownUserError
 from .exceptions import PuzzleUnsolvedError
 from .exceptions import PuzzleLockedError
 from .utils import AOC_TZ
 from .utils import _ensure_intermediate_dirs
+from .utils import atomic_write_file
 from .utils import get_owner
 from .version import __version__
 
@@ -37,7 +40,7 @@ log = logging.getLogger(__name__)
 AOCD_DATA_DIR = os.path.expanduser(os.environ.get("AOCD_DIR", os.path.join("~", ".config", "aocd")))
 AOCD_CONFIG_DIR = os.path.expanduser(os.environ.get("AOCD_CONFIG_DIR", AOCD_DATA_DIR))
 URL = "https://adventofcode.com/{year}/day/{day}"
-USER_AGENT = {"User-Agent": "advent-of-code-data v{}".format(__version__)}
+USER_AGENT = {"User-Agent": "github.com/wimglenn/advent-of-code-data v{} by hey@wimglenn.com".format(__version__)}
 
 
 class User(object):
@@ -47,6 +50,15 @@ class User(object):
     def __init__(self, token):
         self.token = token
         self._owner = "unknown.unknown.0"
+
+    @classmethod
+    def from_id(cls, id):
+        users = _load_users()
+        if id not in users:
+            raise UnknownUserError("User with id '{}' is not known".format(id))
+        user = cls(users[id])
+        user._owner = id
+        return user
 
     @property
     def auth(self):
@@ -99,6 +111,11 @@ class User(object):
             response = requests.get(url, cookies=self.auth, headers=USER_AGENT)
             response.raise_for_status()
             soup = bs4.BeautifulSoup(response.text, "html.parser")
+            if soup.article is None and "You haven't collected any stars" in soup.main.text:
+                continue
+            if soup.article.pre is None and "overall leaderboard" in soup.article.text:
+                msg = "the auth token ...{} is expired or not functioning"
+                raise DeadTokenError(msg.format(self.token[-4:]))
             stats_txt = soup.article.pre.text
             lines = stats_txt.splitlines()
             lines = [x for x in lines if x.split()[0] in days]
@@ -162,6 +179,7 @@ class Puzzle(object):
         fname = "{}_{:02d}".format(self.year, self.day)
         prefix = os.path.join(self.user.memo_dir, fname)
         self.input_data_fname = prefix + "_input.txt"
+        self.example_input_data_fname = prefix + "_example_input.txt"
         self.answer_a_fname = prefix + "a_answer.txt"
         self.answer_b_fname = prefix + "b_answer.txt"
         self.incorrect_answers_a_fname = prefix + "a_bad_answers.txt"
@@ -179,10 +197,6 @@ class Puzzle(object):
 
     @property
     def input_data(self):
-        if self.user.token == ".aocr":
-            with open("input.txt") as f:
-                return f.read()
-        sanitized = "..." + self.user.token[-4:]
         try:
             # use previously received data, if any existing
             with io.open(self.input_data_fname, encoding="utf-8") as f:
@@ -191,9 +205,9 @@ class Puzzle(object):
             if err.errno != errno.ENOENT:
                 raise
         else:
-            sanitized_path = self.input_data_fname.replace(self.user.token, sanitized)
-            log.debug("reusing existing data %s", sanitized_path)
+            log.debug("reusing existing data %s", self.input_data_fname)
             return data.rstrip("\r\n")
+        sanitized = "..." + self.user.token[-4:]
         log.info("getting data year=%s day=%s token=%s", self.year, self.day, sanitized)
         response = requests.get(
             url=self.input_data_url, cookies=self.user.auth, headers=USER_AGENT
@@ -205,10 +219,29 @@ class Puzzle(object):
             log.error(response.text)
             raise AocdError("Unexpected response")
         data = response.text
-        _ensure_intermediate_dirs(self.input_data_fname)
-        with open(self.input_data_fname, "w") as f:
-            log.info("saving the puzzle input token=%s", sanitized)
-            f.write(data)
+        log.info("saving the puzzle input token=%s", sanitized)
+        atomic_write_file(self.input_data_fname, data)
+        return data.rstrip("\r\n")
+
+    @property
+    def example_data(self):
+        try:
+            with io.open(self.example_input_data_fname, encoding="utf-8") as f:
+                data = f.read()
+        except (IOError, OSError) as err:
+            if err.errno != errno.ENOENT:
+                raise
+        else:
+            log.debug("reusing existing example data %s", self.example_input_data_fname)
+            return data.rstrip("\r\n")
+        soup = self._soup()
+        try:
+            data = soup.pre.text
+        except Exception:
+            log.info("unable to find example data year=%s day=%s", self.year, self.day)
+            data = ""
+        log.info("saving the example data")
+        atomic_write_file(self.example_input_data_fname, data)
         return data.rstrip("\r\n")
 
     @property
@@ -306,7 +339,6 @@ class Puzzle(object):
         if part == "b" and value == getattr(self, "answer_a", None):
             raise AocdError("cowardly refusing to re-submit answer_a ({}) for part b".format(value))
         url = self.submit_url
-        sanitized = "..." + self.user.token[-4:]
         check_guess = self._check_guess_against_existing(value, part)
         if check_guess is not None:
             if quiet:
@@ -314,6 +346,7 @@ class Puzzle(object):
             else:
                 print(check_guess)
             return
+        sanitized = "..." + self.user.token[-4:]
         log.info("posting %r to %s (part %s) token=%s", value, url, part, sanitized)
         level = {"a": 1, "b": 2}[part]
         response = requests.post(
@@ -435,7 +468,7 @@ class Puzzle(object):
     def _get_answer(self, part):
         """
         Note: Answers are only revealed after a correct submission. If you've
-        have not already solved the puzzle, PuzzleUnsolvedError will be raised.
+        not already solved the puzzle, PuzzleUnsolvedError will be raised.
         """
         if part == "b" and self.day == 25:
             return ""
@@ -527,3 +560,11 @@ def _parse_duration(s):
     return timedelta(hours=h, minutes=m, seconds=s)
 
 
+def _load_users():
+    path = os.path.join(AOCD_CONFIG_DIR, "tokens.json")
+    try:
+        with open(path) as f:
+            users = json.load(f)
+    except IOError:
+        users = {"default": default_user().token}
+    return users

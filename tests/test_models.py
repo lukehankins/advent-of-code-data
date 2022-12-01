@@ -3,11 +3,12 @@ from __future__ import unicode_literals
 import logging
 from datetime import timedelta
 
-import os
 import pytest
 from requests.exceptions import HTTPError
 
 from aocd.exceptions import AocdError
+from aocd.exceptions import DeadTokenError
+from aocd.exceptions import UnknownUserError
 from aocd.exceptions import PuzzleUnsolvedError
 from aocd.models import Puzzle
 from aocd.models import User
@@ -196,19 +197,6 @@ def test_pprint_cycle(freezer, requests_mock, mocker):
     assert pretty.startswith("<aocd.models.Puzzle object at 0x")
 
 
-def test_aocr_override(monkeypatch, tmp_path):
-    monkeypatch.setenv(str("AOC_SESSION"), str(".aocr"))
-    fileinput = tmp_path / "input.txt"
-    fileinput.write_text("yello")
-    prev = os.getcwd()
-    try:
-        os.chdir(str(tmp_path))
-        puzzle = Puzzle(year=2015, day=1)
-        assert puzzle.input_data == "yello"
-    finally:
-        os.chdir(prev)
-
-
 fake_stats_response = """
 <article><p>These are your personal leaderboard statistics.</p>
 <pre>      <span class="leaderboard-daydesc-first">-------Part 1--------</span>
@@ -236,6 +224,27 @@ def test_get_stats(requests_mock):
         "a": {"time": timedelta(minutes=3, seconds=30), "rank": 158, "score": 0},
         "b": {"time": timedelta(minutes=4, seconds=17), "rank": 25, "score": 76},
     }
+
+
+def test_get_stats_when_token_expired(requests_mock):
+    # sadly, it just returns the global leaderboard, rather than a http 4xx
+    user = User("token12345678")
+    requests_mock.get(
+        url="https://adventofcode.com/2019/leaderboard/self",
+        text="<article><p>Below is the <em>Advent of Code 2019</em> overall leaderboard</p></article>"
+    )
+    expected_msg = "the auth token ...5678 is expired or not functioning"
+    with pytest.raises(DeadTokenError(expected_msg)):
+        user.get_stats(years=[2019])
+
+
+def test_get_stats_when_no_stars_yet(requests_mock):
+    user = User("token12345678")
+    requests_mock.get(
+        url="https://adventofcode.com/2019/leaderboard/self",
+        text="<main>You haven't collected any stars... yet.</main>"
+    )
+    assert user.get_stats(years=[2019]) == {}
 
 
 def test_get_stats_slow_user(requests_mock):
@@ -341,3 +350,33 @@ def test_owner_cache(aocd_config_dir):
     user_id = user.id
     assert user_id == "a.u.n"
     assert str(user) == "<User a.u.n (token=...bleh)>"
+
+
+def test_user_from_id(aocd_config_dir):
+    cache = aocd_config_dir / "tokens.json"
+    cache.write_text('{"github.testuser.123456":"testtoken"}')
+    user = User.from_id("github.testuser.123456")
+    assert user.token == "testtoken"
+
+
+def test_user_from_unknown_id(aocd_config_dir):
+    cache = aocd_config_dir / "tokens.json"
+    cache.write_text('{"github.testuser.123456":"testtoken"}')
+    with pytest.raises(UnknownUserError("User with id 'blah' is not known")):
+        User.from_id("blah")
+
+
+def test_example_data_cache(aocd_data_dir, requests_mock):
+    mock = requests_mock.get(
+        url="https://adventofcode.com/2018/day/1",
+        text="<pre><code>1\n2\n3\n</code></pre><pre><code>annotated</code></pre>",
+    )
+    cached = aocd_data_dir / "testauth.testuser.000/2018_01_example_input.txt"
+    assert not cached.exists()
+    puzzle = Puzzle(day=1, year=2018)
+    assert puzzle.example_data == "1\n2\n3"
+    assert mock.called
+    assert cached.read_text() == "1\n2\n3\n"
+    requests_mock.reset()
+    assert puzzle.example_data == "1\n2\n3"
+    assert not mock.called

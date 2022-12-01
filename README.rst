@@ -15,7 +15,7 @@ Advent of Code data
 .. |actions| image:: https://github.com/wimglenn/advent-of-code-data/actions/workflows/tests.yml/badge.svg
 .. _actions: https://github.com/wimglenn/advent-of-code-data/actions/workflows/tests.yml
 
-.. |codecov| image:: https://codecov.io/gh/wimglenn/advent-of-code-data/branch/master/graph/badge.svg
+.. |codecov| image:: https://codecov.io/gh/wimglenn/advent-of-code-data/branch/main/graph/badge.svg
 .. _codecov: https://codecov.io/gh/wimglenn/advent-of-code-data
 
 
@@ -34,19 +34,22 @@ If you'd just like to print or keep your own input files, there's a shell entry 
    aocd > input.txt  # saves today's data
    aocd 13 2018 > day13.txt  # save some other day's data
 
-*New in version 0.9.0.* Two convenience transforms (maybe more to come later):
+There are currently two convenience transforms (maybe more to come later):
 
 .. code-block:: python
 
    from aocd import lines  # like data.splitlines()
-   from aocd import numbers  # like [int(n) for n in data.splitlines()]
+   from aocd import numbers  # uses regex pattern -?\d+ to extract integers from data
 
-And a ``block`` keyword to ``aocd.get_data()``. If your input is not available yet this will block and display a countdown until the next unlock time.
+If all that sounds too magical, there is a simple getter function to just return your raw data.
 
-**Note:  Please use version 0.3+ of this library.**  It memoizes successful
-requests client side and rate-limits the get_data function, as
-`requested by the AoC author <https://www.reddit.com/r/adventofcode/comments/3v64sb/aoc_is_fragile_please_be_gentle/>`_.
-Thanks!
+.. code-block:: python
+
+   >>> from aocd import get_data
+   >>> get_data(day=24, year=2015)
+   '1\n2\n3\n7\n11\n13\n17\n19\n23\n31...
+
+Note that ``aocd`` will cache puzzle inputs and answers (including incorrect guesses) clientside, to save unnecessary requests to the server.
 
 
 Quickstart
@@ -141,7 +144,7 @@ Submitting answers is also by regular attribute access. Any incorrect answers yo
     aocd will not submit that answer again. You've previously guessed 299 and the server responded:
     That's not the right answer; your answer is too high. If you're stuck, there are some general tips on the about page, or you can ask for hints on the subreddit. Please wait one minute before trying again. (You guessed 299.) [Return to Day 20]
 
-Your own solutions can be executed by writing and using an `entry-point <https://packaging.python.org/specifications/entry-points/>`_ into your code, registered in the group ``"adventofcode.user"``. Your entry-point should resolve to a callable, and it will be called with three keyword arguments: ``year``, ``day``, and ``data``. For example, `my entry-point is called "wim" <https://github.com/wimglenn/advent-of-code-wim/blob/d033366c16fba50e413f2fa7df32e8a0eac9542f/setup.py#L36>`_ and running against `my code <https://github.com/wimglenn/advent-of-code-wim/blob/master/aoc_wim/__init__.py>`_ (after ``pip install advent-of-code-wim``) would be like this:
+Your own solutions can be executed by writing and using an `entry-point <https://packaging.python.org/specifications/entry-points/>`_ into your code, registered in the group ``"adventofcode.user"``. Your entry-point should resolve to a callable, and it will be called with three keyword arguments: ``year``, ``day``, and ``data``. For example, `my entry-point is called "wim" <https://github.com/wimglenn/advent-of-code-wim/blob/d033366c16fba50e413f2fa7df32e8a0eac9542f/setup.py#L36>`_ and running against `my code <https://github.com/wimglenn/advent-of-code-wim/blob/main/aoc_wim/__init__.py>`_ (after ``pip install advent-of-code-wim``) would be like this:
 
 .. code-block:: python
 
@@ -193,14 +196,6 @@ unambiguously recognisable as AoC years (2015+) or days (1-25).
 A filename like ``problem_one.py`` will not work, so don't do that.  If
 you don't like weird frame hacks, just use the ``aocd.get_data()`` function 
 instead and have a nice day!
-
-.. code-block:: python
-
-   >>> from aocd import get_data
-   >>> get_data(day=2)
-   'UULDRRRDDLRLURUUURUURDRUURRDRRURUD...
-   >>> get_data(day=24, year=2015)
-   '1\n2\n3\n7\n11\n13\n17\n19\n23\n31...
 
 
 Cache invalidation?

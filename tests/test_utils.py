@@ -1,10 +1,13 @@
 import platform
 import sys
+
 import pytest
+from freezegun import freeze_time
+
 from aocd.exceptions import DeadTokenError
+from aocd.utils import atomic_write_file
 from aocd.utils import blocker
 from aocd.utils import get_owner
-from freezegun import freeze_time
 
 
 cpython = platform.python_implementation() == "CPython"
@@ -40,7 +43,7 @@ def test_get_owner_not_logged_in(requests_mock):
 def test_get_owner_user_id(requests_mock):
     requests_mock.get(
         "https://adventofcode.com/settings",
-        text="<span>Link to wtf</span><code>123-456-9c3a0172</code>",
+        text="<span>Link to wtf</span><code>ownerproof-123-456-9c3a0172</code>",
     )
     owner = get_owner("...")
     assert owner == "unknown.unknown.123"
@@ -49,7 +52,7 @@ def test_get_owner_user_id(requests_mock):
 def test_get_owner_and_username(requests_mock):
     requests_mock.get(
         "https://adventofcode.com/settings",
-        text="<span>Link to https://www.reddit.com/u/wim</span><code>123-456-9c3a0172</code>",
+        text="<span>Link to https://www.reddit.com/u/wim</span><code>ownerproof-123-456-9c3a0172</code>",
     )
     owner = get_owner("...")
     assert owner == "reddit.wim.123"
@@ -58,7 +61,16 @@ def test_get_owner_and_username(requests_mock):
 def test_get_owner_google(requests_mock):
     requests_mock.get(
         "https://adventofcode.com/settings",
-        text='<span><img src="https://lh3.googleusercontent.com/...">wim</span><code>1-2</code>',
+        text='<span><img src="https://lh3.googleusercontent.com/...">wim</span><code>ownerproof-1-2</code>',
     )
     owner = get_owner("...")
     assert owner == "google.wim.1"
+
+
+def test_atomic_write_file(aocd_data_dir):
+    target = aocd_data_dir / "foo/bar/baz.txt"
+    # Python 2.7 requires inputs to os.path.expanduser to be strings, not PosixPath (which is missing startswith)
+    atomic_write_file(str(target), "123")  # no clobber
+    assert target.read_text() == "123"
+    atomic_write_file(str(target), "456")  # clobber existing
+    assert target.read_text() == "456"
