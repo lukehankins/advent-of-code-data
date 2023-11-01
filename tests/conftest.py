@@ -1,13 +1,16 @@
-from __future__ import unicode_literals
-
+import pook as pook_mod
 import pytest
 
 from aocd.models import User
+from aocd.utils import http
 
 
 @pytest.fixture(autouse=True)
 def mocked_sleep(mocker):
     no_sleep_till_brooklyn = mocker.patch("time.sleep")
+    # nerf the rate-limiter - tests don't actually talk to AoC server at all
+    # (and they *can't*, because we disable socket during tests)
+    http._max_t = -1.0
     return no_sleep_till_brooklyn
 
 
@@ -27,11 +30,11 @@ def aocd_config_dir(tmp_path):
 
 @pytest.fixture(autouse=True)
 def remove_user_env(aocd_data_dir, monkeypatch, aocd_config_dir):
-    monkeypatch.setattr("aocd.runner.AOCD_CONFIG_DIR", str(aocd_config_dir))
-    monkeypatch.setattr("aocd.models.AOCD_DATA_DIR", str(aocd_data_dir))
-    monkeypatch.setattr("aocd.models.AOCD_CONFIG_DIR", str(aocd_config_dir))
-    monkeypatch.setattr("aocd.cookies.AOCD_CONFIG_DIR", str(aocd_config_dir))
-    monkeypatch.delenv(str("AOC_SESSION"), raising=False)
+    monkeypatch.setattr("aocd.runner.AOCD_CONFIG_DIR", aocd_config_dir)
+    monkeypatch.setattr("aocd.models.AOCD_DATA_DIR", aocd_data_dir)
+    monkeypatch.setattr("aocd.models.AOCD_CONFIG_DIR", aocd_config_dir)
+    monkeypatch.setattr("aocd.cookies.AOCD_CONFIG_DIR", aocd_config_dir)
+    monkeypatch.delenv("AOC_SESSION", raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -54,14 +57,21 @@ def answer_not_cached(request, mocker):
         rv = mark.kwargs.get("rv", None)
 
     if install:
-        mocker.patch("aocd.models.Puzzle._check_guess_against_existing", return_value=rv)
+        mocker.patch("aocd.models.Puzzle._check_already_solved", return_value=rv)
+
+
+@pytest.fixture
+def pook():
+    pook_mod.on()
+    yield pook_mod
+    pook_mod.off()
 
 
 @pytest.fixture(autouse=True)
-def detect_user_id(requests_mock):
-    requests_mock.get(
+def detect_user_id(pook):
+    pook.get(
         "https://adventofcode.com/settings",
-        text="<span>Link to testauth/testuser</span><code>ownerproof-000</code>",
+        response_body="<span>Link to testauth/testuser</span><code>ownerproof-000</code>",
     )
     yield
     if getattr(User, "_token2id", None) is not None:

@@ -1,36 +1,93 @@
 import argparse
-import bs4
-import errno
 import logging
 import os
-import requests
+import platform
 import shutil
 import sys
-import tempfile
 import time
-import tzlocal
+from collections import deque
 from datetime import datetime
+from functools import cache
+from importlib.metadata import entry_points
+from importlib.metadata import version
 from itertools import cycle
-from dateutil.tz import gettz
+from tempfile import NamedTemporaryFile
+from zoneinfo import ZoneInfo
+
+import bs4
+import urllib3
 
 from .exceptions import DeadTokenError
 
 
 log = logging.getLogger(__name__)
-AOC_TZ = gettz("America/New_York")
+AOC_TZ = ZoneInfo("America/New_York")
+_v = version("advent-of-code-data")
+USER_AGENT = f"github.com/wimglenn/advent-of-code-data v{_v} by hey@wimglenn.com"
 
 
-def _ensure_intermediate_dirs(fname):
-    parent = os.path.dirname(os.path.expanduser(fname))
-    try:
-        os.makedirs(parent, exist_ok=True)
-    except TypeError:
-        # exist_ok not avail on Python 2
-        try:
-            os.makedirs(parent)
-        except (IOError, OSError) as err:
-            if err.errno != errno.EEXIST:
-                raise
+class HttpClient:
+    # every request to adventofcode.com goes through this wrapper
+    # so that we can put in user agent header, rate-limit, etc.
+    # aocd users should not need to use this class directly.
+
+    def __init__(self):
+        self.pool_manager = urllib3.PoolManager(headers={"User-Agent": USER_AGENT})
+        self.req_count = {"GET": 0, "POST": 0}
+        self._max_t = 3.0
+        self._cooloff = 0.16
+        self._history = deque([time.time() - self._max_t] * 4, maxlen=4)
+
+    def _limiter(self):
+        now = time.time()
+        t0 = self._history[0]
+        if now - t0 < self._max_t:
+            # made 4 requests within 3 seconds - you're past the speed limit
+            # of 1 req/second and will get a delay of 160ms initially, then
+            # increasing exponentially on subsequent occasions. implemented
+            # at the AoC author's request:
+            #   https://github.com/wimglenn/advent-of-code-data/issues/59
+            msg = (
+                "you're being rate-limited - slow down on the requests! "
+                "see https://github.com/wimglenn/advent-of-code-data/issues/59 "
+                "(delay=%.02fs)"
+            )
+            log.warning(msg, self._cooloff)
+            time.sleep(self._cooloff)
+            self._cooloff *= 2  # double it for repeat offenders
+        self._history.append(now)
+
+    def get(self, url, token=None, redirect=True):
+        # getting user inputs, puzzle prose, etc
+        if token is None:
+            headers = self.pool_manager.headers
+        else:
+            headers = self.pool_manager.headers | {"Cookie": f"session={token}"}
+        self._limiter()
+        resp = self.pool_manager.request("GET", url, headers=headers, redirect=redirect)
+        self.req_count["GET"] += 1
+        return resp
+
+    def post(self, url, token, fields):
+        # submitting answers
+        headers = self.pool_manager.headers | {"Cookie": f"session={token}"}
+        self._limiter()
+        resp = self.pool_manager.request_encode_body(
+            method="POST",
+            url=url,
+            fields=fields,
+            headers=headers,
+            encode_multipart=False,
+        )
+        self.req_count["POST"] += 1
+        return resp
+
+
+http = HttpClient()
+
+
+def _ensure_intermediate_dirs(path):
+    path.expanduser().parent.mkdir(parents=True, exist_ok=True)
 
 
 def blocker(quiet=False, dt=0.1, datefmt=None, until=None):
@@ -57,7 +114,7 @@ def blocker(quiet=False, dt=0.1, datefmt=None, until=None):
         # it should already be unlocked - nothing to do
         return
     spinner = cycle(r"\|/-")
-    localzone = tzlocal.get_localzone()
+    localzone = datetime.now().astimezone().tzinfo
     local_unlock = unlock.astimezone(tz=localzone)
     if datefmt is None:
         # %-I does not work on Windows, strip leading zeros manually
@@ -81,15 +138,18 @@ def blocker(quiet=False, dt=0.1, datefmt=None, until=None):
 
 
 def get_owner(token):
-    """parse owner of the token. raises DeadTokenError if the token is expired/invalid.
-    returns a string like authtype.username.userid"""
+    """
+    Find owner of the token.
+    Raises `DeadTokenError` if the token is expired/invalid.
+    Returns a string like "authtype.username.userid"
+    """
     url = "https://adventofcode.com/settings"
-    response = requests.get(url, cookies={"session": token}, allow_redirects=False)
-    if response.status_code != 200:
+    response = http.get(url, token=token, redirect=False)
+    if response.status != 200:
         # bad tokens will 302 redirect to main page
-        log.info("session %s is dead - status_code=%s", token, response.status_code)
-        raise DeadTokenError("the auth token ...{} is expired or not functioning".format(token[-4:]))
-    soup = bs4.BeautifulSoup(response.text, "html.parser")
+        log.info("session %s is dead - status_code=%s", token, response.status)
+        raise DeadTokenError(f"the auth token ...{token[-4:]} is dead")
+    soup = _get_soup(response.data)
     auth_source = "unknown"
     username = "unknown"
     userid = soup.code.text.split("-")[1]
@@ -114,25 +174,61 @@ def get_owner(token):
     return result
 
 
-def atomic_write_file(fname, contents_str):
-    """Atomically write a string to a file by writing it to a temporary file, and then
+def atomic_write_file(path, contents_str):
+    """
+    Atomically write a string to a file by writing it to a temporary file, and then
     renaming it to the final destination name. This solves a race condition where existence
-    of a file doesn't necessarily mean the contents are all correct yet."""
-    _ensure_intermediate_dirs(fname)
-    with tempfile.NamedTemporaryFile(mode="w", dir=os.path.dirname(fname), delete=False) as f:
+    of a file doesn't necessarily mean the content is valid yet.
+    """
+    _ensure_intermediate_dirs(path)
+    with NamedTemporaryFile("w", dir=path.parent, encoding="utf-8", delete=False) as f:
         log.debug("writing to tempfile @ %s", f.name)
         f.write(contents_str)
-    log.debug("moving %s -> %s", f.name, fname)
-    shutil.move(f.name, fname)
+    log.debug("moving %s -> %s", f.name, path)
+    shutil.move(f.name, path)
 
 
 def _cli_guess(choice, choices):
+    # used by the argument parser so that you can specify user ids with a substring
+    # (for example just specifying `-u git` instead of `--users github.wimglenn.119932`
     if choice in choices:
         return choice
     candidates = [c for c in choices if choice in c]
     if len(candidates) > 1:
-        raise argparse.ArgumentTypeError("{} ambiguous (could be {})".format(choice, ", ".join(candidates)))
+        msg = f"{choice} ambiguous (could be {', '.join(candidates)})"
+        raise argparse.ArgumentTypeError(msg)
     elif not candidates:
-        raise argparse.ArgumentTypeError("invalid choice {!r} (choose from {})".format(choice, ", ".join(choices)))
+        msg = f"invalid choice {choice!r} (choose from {', '.join(choices)})"
+        raise argparse.ArgumentTypeError(msg)
     [result] = candidates
     return result
+
+
+_ansi_colors = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"]
+if platform.system() == "Windows":
+    os.system("color")  # hack - makes ANSI colors work in the windows cmd window
+
+
+def colored(txt, color):
+    if color is None:
+        return txt
+    code = _ansi_colors.index(color.casefold())
+    reset = "\x1b[0m"
+    return f"\x1b[{code + 30}m{txt}{reset}"
+
+
+def get_plugins(group="adventofcode.user"):
+    """
+    Currently installed plugins for user solves.
+    """
+    try:
+        # Python 3.10+
+        return entry_points(group=group)
+    except TypeError:
+        # Python 3.9
+        return entry_points().get(group, [])
+
+
+@cache
+def _get_soup(html):
+    return bs4.BeautifulSoup(html, "html.parser")
