@@ -19,29 +19,13 @@ Advent of Code data
 .. _codecov: https://codecov.io/gh/wimglenn/advent-of-code-data
 
 
-Get your puzzle data with a single import statement:
+Speedhackers, get your puzzle data with a single import statement:
 
 .. code-block:: python
 
    from aocd import data
 
-Might be useful for lazy Pythonistas and speedhackers.
-
-If you'd just like to print or keep your own input files, there's a shell entry point for that:
-
-.. code-block:: bash
-
-   aocd > input.txt  # saves today's data
-   aocd 13 2018 > day13.txt  # save some other day's data
-
-There are currently two convenience transforms (maybe more to come later):
-
-.. code-block:: python
-
-   from aocd import lines  # like data.splitlines()
-   from aocd import numbers  # uses regex pattern -?\d+ to extract integers from data
-
-If all that sounds too magical, there is a simple getter function to just return your raw data.
+If that sounds too magical, use a simple function call to return your data in a string:
 
 .. code-block:: python
 
@@ -49,7 +33,38 @@ If all that sounds too magical, there is a simple getter function to just return
    >>> get_data(day=24, year=2015)
    '1\n2\n3\n7\n11\n13\n17\n19\n23\n31...
 
+If you'd just like to print or keep your own raw input files, there's a script for that:
+
+.. code-block:: bash
+
+   aocd > input.txt  # saves today's data
+   aocd 13 2018 > day13.txt  # save some other day's data
+
 Note that ``aocd`` will cache puzzle inputs and answers (including incorrect guesses) clientside, to save unnecessary requests to the server.
+
+*New in version 2.0.0:* Get the example data (and corresponding answers). From `2022 day 5 <https://adventofcode.com/2022/day/5>`_ there was:
+
+.. code-block:: bash
+
+   $ aocd 2022 5 --example
+                             --- Day 5: Supply Stacks ---
+                         https://adventofcode.com/2022/day/5
+   ------------------------------- Example data 1/1 -------------------------------
+       [D]
+   [N] [C]
+   [Z] [M] [P]
+    1   2   3
+
+   move 1 from 2 to 1
+   move 3 from 1 to 3
+   move 2 from 2 to 1
+   move 1 from 1 to 2
+   --------------------------------------------------------------------------------
+   answer_a: CMZ
+   answer_b: MCD
+   --------------------------------------------------------------------------------
+
+How does scraping the examples work? Check `aocd-example-parser <https://github.com/wimglenn/aocd-example-parser>`_ for the gory details.
 
 
 Quickstart
@@ -61,14 +76,22 @@ Install with pip
 
    pip install advent-of-code-data
 
+If you want to use this within a Jupyter notebook, there are some extra deps:
+
+.. code-block:: bash
+
+   pip install 'advent-of-code-data[nb]'
+
 **Puzzle inputs differ by user.**   So export your session ID, for example:
 
 .. code-block:: bash
 
    export AOC_SESSION=cafef00db01dfaceba5eba11deadbeef
 
-This is a cookie which is set when you login to AoC.  You can find it with
-your browser inspector.  If you're hacking on AoC at all you probably already
+*Note:* Windows users should use ``set`` instead of ``export`` here.
+
+The session ID is a cookie which is set when you login to AoC.  You can find it
+with your browser inspector.  If you're hacking on AoC at all you probably already
 know these kind of tricks, but if you need help with that part then you can
 `look here <https://github.com/wimglenn/advent-of-code/issues/1>`_.
 
@@ -89,6 +112,7 @@ If this utility script was able to locate your token, you can save it to file wi
 .. code-block:: bash
 
    $ aocd-token > ~/.config/aocd/token
+
 
 Automated submission
 --------------------
@@ -117,12 +141,18 @@ the right answer, then the puzzle will be refreshed in your web browser
 get rate-limited by Eric, so don't call submit until you're fairly confident
 you have a correct answer!
 
+*New in version 2.0.0*: Prevent submission of an answer when it is certain the value
+is incorrect. For example, if the server previously told you that your answer "1234"
+was too high, then aocd will remember this info and prevent you from subsequently
+submitting an even higher value such as "1300".
 
-OOP-style interfaces
---------------------
+
+Models
+------
 
 *New in version 0.8.0.*
 
+There are classes ``User`` and ``Puzzle`` found in the submodule ``aocd.models``.
 Input data is via regular attribute access. Example usage:
 
 .. code-block:: python
@@ -152,7 +182,6 @@ Your own solutions can be executed by writing and using an `entry-point <https:/
     >>> puzzle.solve_for("wim")
     ('XLZAKBGZ', '10656')
 
-
 If you've never written a plugin before, see https://entrypoints.readthedocs.io/ for more info about plugin systems based on Python entry-points.
 
 
@@ -173,7 +202,9 @@ As you can see above, I actually had incorrect code for `2017 Day 20: Particle S
 
 By the way, the ``aoc`` runner will kill your code if it takes more than 60 seconds, you can increase/decrease this by passing a command-line option, e.g. ``--timeout=120``.
 
-*New in version 1.1.0:*  Added option ``--quiet`` to suppress any output from plugins so it doesn't mess up the ``aoc`` runner's display.
+*New in version 1.1.0:* Added option ``--quiet`` to suppress any output from plugins so it doesn't mess up the ``aoc`` runner's display.
+
+*New in version 2.0.0:* You can verify your code against the example input data and answers, scraped from puzzle pages where available, using ``aoc --example``. This will pass the sample input data into your solver instead of passing the full user input data.
 
 
 How does this library work?
@@ -201,7 +232,7 @@ instead and have a nice day!
 Cache invalidation?
 -------------------
 
-``aocd`` saves puzzle inputs, answers, names, and your bad guesses to avoid hitting
+``aocd`` saves puzzle inputs, answers, prose, and your bad guesses to avoid hitting
 the AoC servers any more often than strictly necessary (this also speeds things up).
 All data is persisted in plain text files under ``~/.config/aocd``. To remove any
 caches, you may simply delete whatever files you want under that directory tree.

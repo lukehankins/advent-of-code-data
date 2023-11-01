@@ -1,20 +1,15 @@
-# coding: utf-8
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-from __future__ import unicode_literals
-
 import pytest
-from termcolor import colored
 
+from aocd.runner import _process_wrapper
 from aocd.runner import format_time
 from aocd.runner import main
 from aocd.runner import run_for
 from aocd.runner import run_one
+from aocd.utils import colored
 
 
 def test_no_plugins_avail(capsys, mocker):
-    mock = mocker.patch("pkg_resources.iter_entry_points", return_value=iter([]))
+    mock = mocker.patch("aocd.runner.get_plugins", return_value=[])
     mocker.patch("sys.argv", ["aoc"])
     msg = (
         "There are no plugins available. Install some package(s) with a registered 'adventofcode.user' entry-point.\n"
@@ -24,18 +19,16 @@ def test_no_plugins_avail(capsys, mocker):
         main()
     out, err = capsys.readouterr()
     assert msg in err
-    mock.assert_called_once_with(group="adventofcode.user")
+    mock.assert_called_once_with()
 
 
 def test_no_datasets_avail(capsys, mocker, aocd_config_dir):
-    datasets_file = aocd_config_dir / "tokens.json"
-    datasets_file.write_text("{}")
+    tokens_file = aocd_config_dir / "tokens.json"
+    tokens_file.write_text("{}")
     mocker.patch("sys.argv", ["aoc"])
     msg = (
         "There are no datasets available to use.\n"
-        "Either export your AOC_SESSION or put some auth tokens into {}\n".format(
-            datasets_file
-        )
+        f"Either export your AOC_SESSION or put some auth tokens into {tokens_file}\n"
     )
     with pytest.raises(SystemExit(1)):
         main()
@@ -49,17 +42,18 @@ def test_main(capsys, mocker, aocd_config_dir):
     ep1.name = "user1"
     ep2 = mocker.Mock()
     ep2.name = "user2"
-    mocker.patch("pkg_resources.iter_entry_points", return_value=iter([ep1, ep2]))
-    datasets_file = aocd_config_dir / "tokens.json"
-    datasets_file.write_text('{"data1": "token1", "data2": "token2"}')
+    mocker.patch("aocd.runner.get_plugins", return_value=[ep1, ep2])
+    tokens_file = aocd_config_dir / "tokens.json"
+    tokens_file.write_text('{"data1": "token1", "data2": "token2"}')
     mocker.patch("sys.argv", ["aoc", "--years=2015", "--days", "3", "7"])
     with pytest.raises(SystemExit(0)):
         main()
     mock.assert_called_once_with(
-        plugins=["user1", "user2"],
+        plugs=["user1", "user2"],
         years=[2015],
         days=[3, 7],
         datasets={"data1": "token1", "data2": "token2"},
+        example=False,
         timeout=60,
         autosubmit=True,
         reopen=False,
@@ -72,6 +66,13 @@ def fake_entry_point(year, day, data):
     assert day == 1
     assert data == "testinput"
     return "answer1", "wrong"
+
+
+def fake_entry_point_25(year, day, data):
+    assert year == 2022
+    assert day == 25
+    assert data == "test example data"
+    return "answer_a", ""
 
 
 def xmas_entry_point(year, day, data):
@@ -89,7 +90,7 @@ def test_results(mocker, capsys):
     ep = mocker.Mock()
     ep.name = "testuser"
     ep.load.return_value = fake_entry_point
-    mocker.patch("pkg_resources.iter_entry_points", return_value=iter([ep]))
+    mocker.patch("aocd.runner.get_plugins", return_value=[ep])
     fake_puzzle = mocker.MagicMock()
     fake_puzzle.year = 2015
     fake_puzzle.day = 1
@@ -99,7 +100,7 @@ def test_results(mocker, capsys):
     fake_puzzle.title = "The Puzzle Title"
     mocker.patch("aocd.runner.Puzzle", return_value=fake_puzzle)
     run_for(
-        plugins=["testuser"],
+        plugs=["testuser"],
         years=[2015],
         days=[1],
         datasets={"testdataset": "testtoken"},
@@ -117,7 +118,7 @@ def test_results_xmas(mocker, capsys):
     ep = mocker.Mock()
     ep.name = "testuser"
     ep.load.return_value = xmas_entry_point
-    mocker.patch("pkg_resources.iter_entry_points", return_value=iter([ep]))
+    mocker.patch("aocd.runner.get_plugins", return_value=[ep])
     fake_puzzle = mocker.MagicMock(
         year=2015,
         day=25,
@@ -128,7 +129,7 @@ def test_results_xmas(mocker, capsys):
     )
     mocker.patch("aocd.runner.Puzzle", return_value=fake_puzzle)
     run_for(
-        plugins=["testuser"],
+        plugs=["testuser"],
         years=[2015],
         days=[25],
         datasets={"testdataset": "testtoken"},
@@ -156,7 +157,7 @@ def test_format_time(t, timeout, expected, color):
 
 
 def test_nothing_to_do():
-    run_for(plugins=[], years=[], days=[], datasets=[])
+    run_for(plugs=[], years=[], days=[], datasets=[])
 
 
 def test_day_out_of_range(mocker, capsys, freezer):
@@ -164,9 +165,9 @@ def test_day_out_of_range(mocker, capsys, freezer):
     ep = mocker.Mock()
     ep.name = "testuser"
     ep.load.return_value = fake_entry_point
-    mocker.patch("pkg_resources.iter_entry_points", return_value=iter([ep]))
+    mocker.patch("aocd.runner.get_plugins", return_value=[ep])
     run_for(
-        plugins=["testuser"],
+        plugs=["testuser"],
         years=[2018],
         days=[27],
         datasets={"default": "thetesttoken"},
@@ -176,10 +177,10 @@ def test_day_out_of_range(mocker, capsys, freezer):
 
 
 def test_run_error(aocd_data_dir, mocker, capsys):
-    title_path = aocd_data_dir / "titles"
-    title_path.mkdir()
-    title_file = title_path / "2018_25.txt"
-    title_file.write_text("The Puzzle Title")
+    prose_dir = aocd_data_dir / "prose"
+    prose_dir.mkdir()
+    puzzle_file = prose_dir / "2018_25_prose.0.html"
+    puzzle_file.write_text("<h2>--- Day 25: The Puzzle Title ---</h2>")
     input_path = aocd_data_dir / "testauth.testuser.000" / "2018_25_input.txt"
     input_path.write_text("someinput")
     answer_path = aocd_data_dir / "testauth.testuser.000" / "2018_25a_answer.txt"
@@ -187,9 +188,9 @@ def test_run_error(aocd_data_dir, mocker, capsys):
     ep = mocker.Mock()
     ep.name = "testuser"
     ep.load.return_value = bugged_entry_point
-    mocker.patch("pkg_resources.iter_entry_points", return_value=iter([ep]))
+    mocker.patch("aocd.runner.get_plugins", return_value=[ep])
     run_for(
-        plugins=["testuser"],
+        plugs=["testuser"],
         years=[2018],
         days=[25],
         datasets={"default": "thetesttoken"},
@@ -201,26 +202,26 @@ def test_run_error(aocd_data_dir, mocker, capsys):
     assert "part b" not in out  # because it's 25 dec, no part b puzzle
 
 
-def test_run_and_autosubmit(aocd_data_dir, mocker, capsys, requests_mock):
-    title_path = aocd_data_dir / "titles"
-    title_path.mkdir()
-    title_file = title_path / "2015_01.txt"
-    title_file.write_text("The Puzzle Title")
+def test_run_and_autosubmit(aocd_data_dir, mocker, capsys, pook):
+    prose_dir = aocd_data_dir / "prose"
+    prose_dir.mkdir()
+    puzzle_file = prose_dir / "2015_01_prose.0.html"
+    puzzle_file.write_text("<h2>--- Day 1: The Puzzle Title ---</h2>")
     input_path = aocd_data_dir / "testauth.testuser.000" / "2015_01_input.txt"
     input_path.write_text("testinput")
     answer_path = aocd_data_dir / "testauth.testuser.000" / "2015_01a_answer.txt"
     answer_path.write_text("answer1")
-    requests_mock.get(url="https://adventofcode.com/2015/day/1")
-    requests_mock.post(
+    pook.get(url="https://adventofcode.com/2015/day/1", times=2)
+    pook.post(
         url="https://adventofcode.com/2015/day/1/answer",
-        text="<article>That's not the right answer</article>",
+        response_body="<article>That's not the right answer</article>",
     )
     ep = mocker.Mock()
     ep.name = "testuser"
     ep.load.return_value = fake_entry_point
-    mocker.patch("pkg_resources.iter_entry_points", return_value=iter([ep]))
+    mocker.patch("aocd.runner.get_plugins", return_value=[ep])
     run_for(
-        plugins=["testuser"],
+        plugs=["testuser"],
         years=[2015],
         days=[1],
         datasets={"default": "thetesttoken"},
@@ -230,22 +231,22 @@ def test_run_and_autosubmit(aocd_data_dir, mocker, capsys, requests_mock):
     assert "part b: wrong (correct answer unknown)" in out
 
 
-def test_run_and_no_autosubmit(aocd_data_dir, mocker, capsys, requests_mock):
-    title_path = aocd_data_dir / "titles"
-    title_path.mkdir()
-    title_file = title_path / "2015_01.txt"
-    title_file.write_text("The Puzzle Title")
+def test_run_and_no_autosubmit(aocd_data_dir, mocker, capsys, pook):
+    prose_dir = aocd_data_dir / "prose"
+    prose_dir.mkdir()
+    puzzle_file = prose_dir / "2015_01_prose.0.html"
+    puzzle_file.write_text("<h2>--- Day 1: The Puzzle Title ---</h2>")
     input_path = aocd_data_dir / "testauth.testuser.000" / "2015_01_input.txt"
     input_path.write_text("testinput")
     answer_path = aocd_data_dir / "testauth.testuser.000" / "2015_01a_answer.txt"
     answer_path.write_text("answer1")
-    requests_mock.get(url="https://adventofcode.com/2015/day/1")
+    pook.get(url="https://adventofcode.com/2015/day/1")
     ep = mocker.Mock()
     ep.name = "testuser"
     ep.load.return_value = fake_entry_point
-    mocker.patch("pkg_resources.iter_entry_points", return_value=iter([ep]))
+    mocker.patch("aocd.runner.get_plugins", return_value=[ep])
     run_for(
-        plugins=["testuser"],
+        plugs=["testuser"],
         years=[2015],
         days=[1],
         datasets={"default": "thetesttoken"},
@@ -254,6 +255,39 @@ def test_run_and_no_autosubmit(aocd_data_dir, mocker, capsys, requests_mock):
     out, err = capsys.readouterr()
     assert "part a: answer1 " in out
     assert "part b: wrong (correct answer unknown)" in out
+
+
+def test_run_against_examples(aocd_data_dir, mocker, capsys, pook):
+    prose_dir = aocd_data_dir / "prose"
+    prose_dir.mkdir()
+    puzzle_file = prose_dir / "2022_25_prose.0.html"
+    puzzle_file.write_text(
+        """
+        <title>Day 25 - Advent of Code 2022</title>
+        <h2>--- Day 25: The Puzzle Title ---</h2>
+        <article>
+        <pre>test example data</pre>
+        <code>test answer_a</code>
+        </article>
+        """
+    )
+    pook.get(url="https://adventofcode.com/2022/day/25")
+    ep = mocker.Mock()
+    ep.name = "testuser"
+    ep.load.return_value = fake_entry_point_25
+    mocker.patch("aocd.runner.get_plugins", return_value=[ep])
+    run_for(
+        plugs=["testuser"],
+        years=[2022],
+        days=[25],
+        datasets={"default": "thetesttoken"},
+        example=True,
+    )
+    out, err = capsys.readouterr()
+    assert "2022/25 - The Puzzle Title" in out
+    assert " testuser/example-1 " in out
+    assert "part a: answer_a" in out
+    assert "part b:" not in out
 
 
 def file_entry_point(year, day, data):
@@ -282,3 +316,13 @@ def test_scratch_cleanup_failure(mocker):
     ep.load.return_value = file_entry_point
     mocker.patch("os.rmdir", side_effect=OSError)
     run_one(2015, 1, "abcxyz", ep)
+
+
+def test_process_wrapper(capsys):
+    _process_wrapper(lambda: print("1"))
+    out, err = capsys.readouterr()
+    assert err == ""
+    assert out.strip() == "1"
+    _process_wrapper(lambda: print("2"), capture=True)
+    out, err = capsys.readouterr()
+    assert not err and not out
