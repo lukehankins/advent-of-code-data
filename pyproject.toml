@@ -4,8 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "advent-of-code-data"
-version = "2.0.1"
+version = "2.0.4"
 description = "Get your puzzle data with a single import"
+readme = "README.md"
 requires-python = ">=3.9"
 classifiers = [
     "Intended Audience :: Developers",
@@ -23,15 +24,11 @@ dependencies = [
 ]
 
 [[project.authors]]
-name = "Wim Glenn"
+name = "Wim Jeantine-Glenn"
 email = "hey@wimglenn.com"
 
 [project.license]
 text = "MIT"
-
-[project.readme]
-file = "README.rst"
-content-type = "text/x-rst"
 
 [project.urls]
 Homepage = "https://github.com/wimglenn/advent-of-code-data"
@@ -48,6 +45,26 @@ aoce = "aocd.examples:main"
 [tool.setuptools]
 packages = ["aocd"]
 
+[tool.setuptools.package-data]
+aocd = ["py.typed"]
+
+
 [project.entry-points]
 "adventofcode.user" = {}  # for user solvers
 "adventofcode.examples" = {}  # for example-parser implementations
+
+[tool.pytest.ini_options]
+addopts = """
+  --strict-markers
+  --disable-socket
+  --allow-unix-socket
+  --cov-branch
+  --cov=aocd --cov=tests
+  --cov-report=html --cov-report=term-missing:skip-covered"""
+xfail_strict = true
+markers = "answer_not_cached"
+
+[tool.coverage.report]
+exclude_also = [
+  "if t\\.TYPE_CHECKING:"
+]

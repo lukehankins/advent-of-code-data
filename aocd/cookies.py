@@ -12,10 +12,10 @@ from .utils import colored
 from .utils import get_owner
 
 
-log = logging.getLogger(__name__)
+log: logging.Logger = logging.getLogger(__name__)
 
 
-def get_working_tokens():
+def get_working_tokens() -> dict[str, str]:
     """Check browser cookie storage for session tokens from .adventofcode.com domain."""
     log.debug("checking for installation of browser-cookie3 package")
     try:
@@ -48,9 +48,20 @@ def get_working_tokens():
         firefox = [c for c in firefox if c.name == "session"]
         log.info("%d candidates from firefox", len(firefox))
 
+    log.info("checking edge cookie jar...")
+    try:
+        edge = bc3.edge(domain_name=".adventofcode.com")
+    except Exception as err:
+        log.debug("Couldn't scrape edge - %s: %s", type(err), err)
+        edge = []
+    else:
+        edge = [c for c in edge if c.name == "session"]
+        log.info("%d candidates from edge", len(edge))
+
+    cookies = chrome + firefox + edge
     # order preserving de-dupe
-    tokens = list({}.fromkeys([c.value for c in chrome + firefox]))
-    removed = len(chrome + firefox) - len(tokens)
+    tokens = list({}.fromkeys([c.value for c in cookies if c.value is not None]))
+    removed = len(cookies) - len(tokens)
     if removed:
         log.info("Removed %d duplicate%s", removed, "s"[: removed - 1])
 
@@ -66,7 +77,7 @@ def get_working_tokens():
     return result
 
 
-def scrape_session_tokens():
+def scrape_session_tokens() -> None:
     """Scrape AoC session tokens from your browser's cookie storage."""
     aocd_token_path = AOCD_CONFIG_DIR / "token"
     aocd_tokens_path = AOCD_CONFIG_DIR / "tokens.json"

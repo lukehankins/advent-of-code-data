@@ -1,8 +1,11 @@
+from __future__ import annotations
+
 import datetime
 import os
 import re
 import traceback
 from logging import getLogger
+from logging import Logger
 
 from ._ipykernel import get_ipynb_path
 from .exceptions import AocdError
@@ -14,15 +17,36 @@ from .utils import AOC_TZ
 from .utils import blocker
 
 
-log = getLogger(__name__)
+log: Logger = getLogger(__name__)
 
 
-def get_data(session=None, day=None, year=None, block=False):
+def get_data(
+    session: str | None = None,
+    day: int | None = None,
+    year: int | None = None,
+    block: bool = False,
+) -> str:
     """
     Get data for day (1-25) and year (2015+).
     User's session cookie (str) is needed - puzzle inputs differ by user.
     If `block` is True and the puzzle is still locked, will wait until unlock
     before returning data.
+    """
+    puzzle = get_puzzle(session, day, year, block)
+    return puzzle.input_data
+
+
+def get_puzzle(
+    session: str | None = None,
+    day: int | None = None,
+    year: int | None = None,
+    block: bool = False,
+) -> Puzzle:
+    """
+    Get puzzle for day (1-25) and year (2015+).
+    User's session cookie (str) is needed - puzzle inputs differ by user.
+    If `block` is True and the puzzle is still locked, will wait until unlock
+    before returning puzzle.
     """
     if session is None:
         user = default_user()
@@ -36,16 +60,18 @@ def get_data(session=None, day=None, year=None, block=False):
         log.info("most recent year=%s", year)
     puzzle = Puzzle(year=year, day=day, user=user)
     try:
-        return puzzle.input_data
+        puzzle.input_data
     except PuzzleLockedError:
         if not block:
             raise
         q = block == "q"
         blocker(quiet=q, until=(year, day))
-        return puzzle.input_data
+        return puzzle
+    else:
+        return puzzle
 
 
-def most_recent_year():
+def most_recent_year() -> int:
     """
     This year, if it's December.
     The most recent year, otherwise.
@@ -60,7 +86,7 @@ def most_recent_year():
     return year
 
 
-def current_day():
+def current_day() -> int:
     """
     Most recent day, if it's during the Advent of Code. Happy Holidays!
     Day 1 is assumed, otherwise.
@@ -73,7 +99,7 @@ def current_day():
     return day
 
 
-def get_day_and_year():
+def get_day_and_year() -> tuple[int, int | None]:
     """
     Returns tuple (day, year).
 

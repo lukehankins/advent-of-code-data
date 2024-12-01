@@ -1,6 +1,6 @@
 --editable .
 numpy
-git+https://github.com/h2non/pook@f73fd34
+pook >= 2
 pytest
 pytest-cov
 pytest-mock
@@ -8,3 +8,4 @@ pytest-raisin
 pytest-freezer
 pytest-socket
 rich
+freezegun

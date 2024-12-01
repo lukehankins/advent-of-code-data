@@ -1,4 +1,5 @@
 import sys
+import typing as t
 from functools import partial
 
 from . import _ipykernel
@@ -10,17 +11,45 @@ from . import get
 from . import models
 from . import post
 from . import runner
+from . import types
 from . import utils
 from .exceptions import AocdError
 from .get import get_data
+from .get import get_puzzle
 from .get import get_day_and_year
 from .post import submit as _impartial_submit
 
+__all__ = [
+    "AocdError",
+    "cli",
+    "cookies",
+    "data",
+    "examples",
+    "exceptions",
+    "get",
+    "get_data",
+    "models",
+    "post",
+    "puzzle",
+    "runner",
+    "submit",
+    "types",
+    "utils",
+]
 
-def __getattr__(name):
+if t.TYPE_CHECKING:
+    data: str
+    puzzle: models.Puzzle
+    submit = _impartial_submit
+
+
+def __getattr__(name: str) -> t.Any:
     if name == "data":
         day, year = get_day_and_year()
         return get_data(day=day, year=year)
+    if name == "puzzle":
+        day, year = get_day_and_year()
+        return get_puzzle(day=day, year=year)
     if name == "submit":
         try:
             day, year = get_day_and_year()
