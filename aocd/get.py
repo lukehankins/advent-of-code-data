@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime
 import os
 import re
+import sys
 import traceback
 from logging import getLogger
 from logging import Logger
@@ -66,9 +67,7 @@ def get_puzzle(
             raise
         q = block == "q"
         blocker(quiet=q, until=(year, day))
-        return puzzle
-    else:
-        return puzzle
+    return puzzle
 
 
 def most_recent_year() -> int:
@@ -133,6 +132,7 @@ def get_day_and_year() -> tuple[int, int | None]:
         filename = frame[0]
         linetxt = frame[-1] or ""
         basename = os.path.basename(filename)
+        basename = basename.split("part")[0]
         reasons_to_skip_frame = [
             not re.search(pattern_day, basename),  # no digits in filename
             filename == __file__,  # here
@@ -173,9 +173,7 @@ def get_day_and_year() -> tuple[int, int | None]:
                 return day, year
         log.debug("skipping frame %s", filename)
     else:
-        import __main__
-
-        if getattr(__main__, "__file__", "<input>") == "<input>":
+        if hasattr(sys, "ps1"):
             log.debug("running within REPL")
             day = current_day()
             year = most_recent_year()

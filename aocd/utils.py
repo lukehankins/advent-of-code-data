@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import logging
 import os
 import platform
@@ -10,6 +11,8 @@ import time
 import typing as t
 from collections import deque
 from datetime import datetime
+from decimal import Decimal
+from fractions import Fraction
 from functools import cache
 from importlib.metadata import entry_points
 from importlib.metadata import version
@@ -21,6 +24,7 @@ from zoneinfo import ZoneInfo
 import bs4
 import urllib3
 
+from .exceptions import CoercionError
 from .exceptions import DeadTokenError
 
 if sys.version_info >= (3, 10):
@@ -47,11 +51,12 @@ class HttpClient:
     req_count: dict[t.Literal["GET", "POST"], int]
 
     def __init__(self) -> None:
-        proxy_url = os.environ.get('http_proxy') or os.environ.get('https_proxy')
+        proxy_url = os.environ.get("http_proxy") or os.environ.get("https_proxy")
+        headers = {"User-Agent": USER_AGENT}
         if proxy_url:
-            self.pool_manager = urllib3.ProxyManager(proxy_url, headers={"User-Agent": USER_AGENT})
+            self.pool_manager = urllib3.ProxyManager(proxy_url, headers=headers)
         else:
-            self.pool_manager = urllib3.PoolManager(headers={"User-Agent": USER_AGENT})
+            self.pool_manager = urllib3.PoolManager(headers=headers)
         self.req_count = {"GET": 0, "POST": 0}
         self._max_t = 3.0
         self._cooloff = 0.16
@@ -173,6 +178,7 @@ def get_owner(token: str) -> str:
     Returns a string like "authtype.username.userid"
     """
     url = "https://adventofcode.com/settings"
+    log.debug(f"attempting to determine owner of token ...{token[-4:]}")
     response = http.get(url, token=token, redirect=False)
     if response.status != 200:
         # bad tokens will 302 redirect to main page
@@ -264,3 +270,51 @@ def get_plugins(group: str = "adventofcode.user") -> _EntryPointsType:
 @cache
 def _get_soup(html):
     return bs4.BeautifulSoup(html, "html.parser")
+
+
+def coerce(val: t.Any, warn: bool = False) -> str:
+    """
+    Convert answer `val` into a string suitable for HTTP submission.
+    Technically adventofcode.com will only accept strings as answers,
+    but it's convenient to be able to submit numbers since many of the answers
+    are numeric strings.
+    """
+    orig_val = val
+    coerced = False
+    # A user can't be submitting a numpy type if numpy is not installed, so skip
+    # handling of those types
+    with contextlib.suppress(ImportError):
+        import numpy as np
+
+        # "unwrap" arrays that contain a single element
+        if isinstance(val, np.ndarray) and val.size == 1:
+            coerced = True
+            val = val.item()
+        if isinstance(val, (np.integer, np.floating, np.complexfloating)) and val.imag == 0 and val.real.is_integer():
+            coerced = True
+            val = str(int(val.real))
+    if isinstance(val, int):
+        val = str(val)
+    elif isinstance(val, (float, complex)) and val.imag == 0 and val.real.is_integer():
+        coerced = True
+        val = str(int(val.real))
+    elif isinstance(val, bytes):
+        coerced = True
+        val = val.decode()
+    elif isinstance(val, (Decimal, Fraction)):
+        # if val can be represented as an integer ratio where the denominator is 1
+        # val is an integer and val == numerator
+        numerator, denominator = val.as_integer_ratio()
+        if denominator == 1:
+            coerced = True
+            val = str(numerator)
+    if not isinstance(val, str):
+        raise CoercionError(f"Failed to coerce {type(orig_val).__name__} value {orig_val!r} to str")
+    if coerced and warn:
+        log.warning(
+            "coerced %s value %r to %r",
+            type(orig_val).__name__,
+            orig_val,
+            val,
+        )
+    return val

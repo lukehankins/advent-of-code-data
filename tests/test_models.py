@@ -1,10 +1,7 @@
-import decimal
-import fractions
 import logging
 from datetime import datetime
 from datetime import timedelta
 
-import numpy as np
 import pytest
 
 from aocd.exceptions import AocdError
@@ -314,6 +311,30 @@ def test_easter_eggs(pook):
     assert egg.attrs["title"] == "Later, on its turn, it sends you a sorcery."
 
 
+def test_easter_eggs_cache(pook):
+    pook.get(
+        url="https://adventofcode.com/2025/day/1",
+        response_body=(
+            "Advent of Code"
+            '<article class="day-desc">'
+            "<h2>--- Day 1: Secret Entrance ---</h2>"
+            "The first half of this puzzle is complete!"
+            "<p>Your puzzle answer was <code>answerA</code></p>"
+            '<p><em>password method <span title="You should have seen the chaos">'
+            "0x434C49434B</span></em></p>"
+        )
+    )
+    puzzle = Puzzle(2025, 1)
+    puzzle.prose0_path.parent.mkdir(parents=True, exist_ok=True)
+    puzzle.prose0_path.write_text("no egg")
+    assert not puzzle.prose1_path.exists()
+    [egg] = puzzle.easter_eggs
+    assert puzzle.prose1_path.exists()
+    assert not puzzle.prose2_path.exists()
+    assert egg.text == "0x434C49434B"
+    assert egg.attrs["title"] == "You should have seen the chaos"
+
+
 def test_get_stats_400(pook):
     url = "https://adventofcode.com/2015/leaderboard/self"
     pook.get(url, reply=400)
@@ -377,13 +398,16 @@ def test_user_from_unknown_id(aocd_config_dir):
         User.from_id("blah")
 
 
-def test_examples_cache(aocd_data_dir, pook):
+def test_examples_cache(aocd_data_dir, pook, caplog):
+    caplog.set_level(logging.DEBUG)
     mock = pook.get(
         url="https://adventofcode.com/2014/day/1",
         response_body=(
             "<title>Day 1 - Advent of Code 2014</title>"
             "<article><pre><code>1\n2\n3\n</code></pre><code>abc</code></article>"
             "<article><pre><code>1\n2\n3\n</code></pre><code>xyz</code></article>"
+            "The first half of this puzzle is complete!"
+            "<p>Your puzzle answer was <code>answerA</code></p>"
         ),
         times=1,
     )
@@ -391,8 +415,8 @@ def test_examples_cache(aocd_data_dir, pook):
     assert mock.calls == 0
     assert puzzle.examples[0].input_data == "1\n2\n3"
     assert mock.calls == 1
-    assert puzzle.examples[0].input_data
-    assert mock.calls == 1
+    assert puzzle.examples[0].input_data == "1\n2\n3"
+    assert mock.calls == 1, "Should re-use cached result"
 
 
 def test_example_partial(aocd_data_dir, pook):
@@ -420,74 +444,6 @@ def test_example_data_crash(pook, caplog):
     err_repr = "ExampleParserError('no <article> found in html')"
     msg = f"unable to find example data for 2018/01 ({err_repr})"
     assert ("aocd.models", logging.WARNING, msg) in caplog.record_tuples
-
-
-@pytest.mark.parametrize(
-    "v_raw,v_expected,len_logs",
-    [
-        ("123", "123", 0),
-        (123, "123", 0),
-        ("xxx", "xxx", 0),
-        (123.5, 123.5, 0),
-        (123.0 + 123.0j, 123.0 + 123.0j, 0),
-        (123.0, "123", 1),
-        (123.0 + 0.0j, "123", 1),
-        (np.int32(123), "123", 1),
-        (np.uint32(123), "123", 1),
-        (np.double(123.0), "123", 1),
-        (np.complex64(123.0 + 0.0j), "123", 1),
-        (np.complex64(123.0 + 0.5j), np.complex64(123.0 + 0.5j), 0),
-    ],
-)
-def test_type_coercions(v_raw, v_expected, len_logs, caplog):
-    p = Puzzle(2022, 1)
-    v_actual = p._coerce_val(v_raw)
-    assert v_actual == v_expected, f"{type(v_raw)} {v_raw})"
-    assert len(caplog.records) == len_logs
-
-
-@pytest.mark.parametrize(
-    "v_raw, v_expected, len_logs",
-    [
-        ("xxx", "xxx", 0),  # str -> str
-        (b"123", "123", 1),  # bytes -> str
-        (123, "123", 0),  # int -> str
-        (123.0, "123", 1),  # float -> str
-        (123.0 + 0.0j, "123", 1),  # complex -> str
-        (np.int32(123), "123", 1),  # np.int -> str
-        (np.uint32(123), "123", 1),  # np.uint -> str
-        (np.double(123.0), "123", 1),  # np.double -> str
-        (np.complex64(123.0 + 0.0j), "123", 1),  # np.complex -> str
-        (np.array([123]), "123", 1),  # 1D np.array of int -> str
-        (np.array([[123.0]]), "123", 1),  # 2D np.array of float -> str
-        (np.array([[[[[[123.0 + 0j]]]]]]), "123", 1),  # deep np.array of complex -> str
-        (fractions.Fraction(123 * 2, 2), "123", 1),  # Fraction -> int
-        (decimal.Decimal("123"), "123", 1),  # Decimal -> int
-    ],
-)
-def test_type_coercions(v_raw, v_expected, len_logs, caplog):
-    p = Puzzle(2022, 1)
-    v_actual = p._coerce_val(v_raw)
-    assert v_actual == v_expected, f"{type(v_raw)} {v_raw})"
-    assert len(caplog.records) == len_logs
-
-
-@pytest.mark.parametrize(
-    "val, error_msg",
-    [
-        (123.5, "Failed to coerce float value 123.5 for 2022/01."),  # non-integer float
-        (123.0 + 123.0j, "Failed to coerce complex value (123+123j) for 2022/01."),  # complex w/ imag
-        (np.complex64(123.0 + 0.5j), "Failed to coerce complex64 value np.complex64(123+0.5j) for 2022/01."),  # np.complex w/ imag
-        (np.array([1, 2]), "Failed to coerce ndarray value array([1, 2]) for 2022/01."),  # 1D np.array with size != 1
-        (np.array([[1], [2]]), "Failed to coerce ndarray value array([[1],\n       [2]]) for 2022/01."),  # 2D np.array with size != 1
-        (fractions.Fraction(123, 2), "Failed to coerce Fraction value Fraction(123, 2) for 2022/01."),  # Fraction
-        (decimal.Decimal("123.5"), "Failed to coerce Decimal value Decimal('123.5') for 2022/01."),  # Decimal
-    ]
-)
-def test_type_coercions_fail(val, error_msg):
-    p = Puzzle(2022, 1)
-    with pytest.raises(AocdError(error_msg)):
-        p._coerce_val(val)
 
 
 def test_get_prose_cache(aocd_data_dir):

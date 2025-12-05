@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import itertools
+import json
 import logging
 import os
 import sys
@@ -19,6 +20,7 @@ import pebble.concurrent
 from .exceptions import AocdError
 from .models import _load_users
 from .models import AOCD_CONFIG_DIR
+from .models import NON_ANSWER
 from .models import Puzzle
 from .utils import _cli_guess
 from .utils import AOC_TZ
@@ -30,7 +32,7 @@ from .utils import get_plugins
 # every problem has a solution that completes in at most 15 seconds on ten-year-old hardware
 
 
-DEFAULT_TIMEOUT = 60
+DEFAULT_TIMEOUT: float = 60.
 log: logging.Logger = logging.getLogger(__name__)
 
 
@@ -346,6 +348,9 @@ def run_for(
         for dataset in datas:
             if example:
                 data = examples[dataset].input_data
+                extra = examples[dataset].extra
+                if extra:
+                    os.environ[f"AOCD_EXTRA"] = json.dumps(extra)
             else:
                 token = datasets[dataset]
                 os.environ["AOC_SESSION"] = token
@@ -363,8 +368,12 @@ def run_for(
                 progress=progress,
                 capture=capture,
             )
+            os.environ.pop(f"AOCD_EXTRA", None)
             runtime = format_time(walltime, timeout)
             line = "   ".join([runtime, progress])
+            if a in NON_ANSWER and b in NON_ANSWER and not error:
+                a = b = ""
+                error = f"Skipping {year}/{day:<2d} (entry-point returned non-answers)"
             if error:
                 assert a == b == ""
                 icon = colored("✖", "red")
@@ -385,13 +394,19 @@ def run_for(
                         post = part == "a" or (part == "b" and puzzle.answered_a)
                         if autosubmit and post:
                             try:
-                                puzzle._submit(answer, part, reopen=reopen, quiet=True)
+                                puzzle._submit(
+                                    value=answer,
+                                    part=part,
+                                    reopen=reopen,
+                                    quiet=True,
+                                    precheck=False,
+                                )
                             except AocdError as err:
                                 log.warning("error submitting - %s", err)
-                            try:
+                            # Correct submission will have created the answer file
+                            answer_path = getattr(puzzle, f"answer_{part}_path")
+                            if answer_path.is_file():
                                 expected = getattr(puzzle, "answer_" + part)
-                            except AttributeError:
-                                pass
                     correct = expected is not None and str(expected) == answer
                     icon = colored("✔", "green") if correct else colored("✖", "red")
                     correction = ""

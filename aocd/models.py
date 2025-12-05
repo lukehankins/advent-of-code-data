@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
 import os
@@ -11,8 +10,6 @@ import typing as t
 import webbrowser
 from datetime import datetime
 from datetime import timedelta
-from decimal import Decimal
-from fractions import Fraction
 from functools import cache
 from functools import cached_property
 from importlib.metadata import entry_points
@@ -36,6 +33,7 @@ from .utils import _ensure_intermediate_dirs
 from .utils import _get_soup
 from .utils import AOC_TZ
 from .utils import atomic_write_file
+from .utils import coerce
 from .utils import colored
 from .utils import get_owner
 from .utils import get_plugins
@@ -49,6 +47,10 @@ AOCD_DATA_DIR = Path(os.environ.get("AOCD_DIR", Path("~", ".config", "aocd")))
 AOCD_DATA_DIR = AOCD_DATA_DIR.expanduser()
 AOCD_CONFIG_DIR = Path(os.environ.get("AOCD_CONFIG_DIR", AOCD_DATA_DIR)).expanduser()
 URL = "https://adventofcode.com/{year}/day/{day}"
+
+# aocd will refuse to submit these as answers, and if a user entry point happens to
+# return them the runner will consider it to mean the solution hasn't been implemented
+NON_ANSWER = "", b"", None, b"None", "None"
 
 
 class User:
@@ -129,6 +131,7 @@ class User:
         ur_broke = "You haven't collected any stars"
         for year in years:
             url = f"https://adventofcode.com/{year}/leaderboard/self"
+            log.debug("requesting personal stats for year %d", year)
             response = http.get(url, token=self.token, redirect=False)
             if 300 <= response.status < 400:
                 # expired tokens 302 redirect to the overall leaderboard
@@ -265,7 +268,7 @@ class Puzzle:
         # logs warning and returns an empty list if the parser plugin raises an
         # exception for any reason.
         try:
-            page = examples.Page.from_raw(html=self._get_prose())
+            page = examples.Page.from_raw(html=self._get_prose(force_precheck=True))
             parser = _load_example_parser(name=parser_name)
             if getattr(parser, "uses_real_datas", True):
                 datas = examples._get_unique_real_inputs(self.year, self.day)
@@ -303,52 +306,6 @@ class Puzzle:
             txt = f"<Puzzle({self.year}, {self.day}) at {hex(id(self))} - {self.title}>"
             p.text(txt)
 
-    def _coerce_val(self, val):
-        # technically adventofcode.com will only accept strings as answers.
-        # but it's convenient to be able to submit numbers, since many of the answers
-        # are numeric strings. coerce the values to string safely.
-        orig_val = val
-        coerced = False
-        # A user can't be submitting a numpy type if numpy is not installed, so skip
-        # handling of those types
-        with contextlib.suppress(ImportError):
-            import numpy as np
-
-            # "unwrap" arrays that contain a single element
-            if isinstance(val, np.ndarray) and val.size == 1:
-                coerced = True
-                val = val.item()
-            if isinstance(val, (np.integer, np.floating, np.complexfloating)) and val.imag == 0 and val.real.is_integer():
-                coerced = True
-                val = str(int(val.real))
-        if isinstance(val, int):
-            val = str(val)
-        elif isinstance(val, (float, complex)) and val.imag == 0 and val.real.is_integer():
-            coerced = True
-            val = str(int(val.real))
-        elif isinstance(val, bytes):
-            coerced = True
-            val = val.decode()
-        elif isinstance(val, (Decimal, Fraction)):
-            # if val can be represented as an integer ratio where the denominator is 1
-            # val is an integer and val == numerator
-            numerator, denominator = val.as_integer_ratio()
-            if denominator == 1:
-                coerced = True
-                val = str(numerator)
-        if not isinstance(val, str):
-            raise AocdError(f"Failed to coerce {type(orig_val).__name__} value {orig_val!r} for {self.year}/{self.day:02}.")
-        if coerced:
-            log.warning(
-                "coerced %s value %r for %d/%02d to %r",
-                type(orig_val).__name__,
-                orig_val,
-                self.year,
-                self.day,
-                val,
-            )
-        return val
-
     @property
     def answer_a(self) -> str:
         """
@@ -371,7 +328,8 @@ class Puzzle:
         The result of the submission will be printed to the terminal. It will only POST
         to the server if necessary.
         """
-        val = self._coerce_val(val)
+        if not isinstance(val, str):
+            val = coerce(val, warn=True)
         if getattr(self, "answer_a", None) == val:
             return
         self._submit(value=val, part="a")
@@ -403,7 +361,8 @@ class Puzzle:
         The result of the submission will be printed to the terminal. It will only POST
         to the server if necessary.
         """
-        val = self._coerce_val(val)
+        if not isinstance(val, str):
+            val = coerce(val, warn=True)
         if getattr(self, "answer_b", None) == val:
             return
         self._submit(value=val, part="b")
@@ -456,14 +415,14 @@ class Puzzle:
             return json.loads(self.submit_results_path.read_text())
         return []
 
-    def _submit(self, value, part, reopen=True, quiet=False):
+    def _submit(self, value, part, reopen=True, quiet=False, precheck=True):
         # actual submit logic. not meant to be invoked directly - users are expected
         # to use aocd.post.submit function, puzzle answer setters, or the aoc.runner
         # which autosubmits answers by default.
-        if value in {"", b"", None, b"None", "None"}:
+        if value in NON_ANSWER:
             raise AocdError(f"cowardly refusing to submit non-answer: {value!r}")
         if not isinstance(value, str):
-            value = self._coerce_val(value)
+            value = coerce(value, warn=True)
         part = str(part).replace("1", "a").replace("2", "b").lower()
         if part not in {"a", "b"}:
             raise AocdError('part must be "a" or "b"')
@@ -541,13 +500,14 @@ class Puzzle:
                 "because that was the answer for part a"
             )
         url = self.submit_url
-        check_guess = self._check_already_solved(value, part)
-        if check_guess is not None:
-            if quiet:
-                log.info(check_guess)
-            else:
-                print(check_guess)
-            return
+        if precheck:
+            check_guess = self._check_already_solved(value, part)
+            if check_guess is not None:
+                if quiet:
+                    log.info(check_guess)
+                else:
+                    print(check_guess)
+                return
         sanitized = "..." + self.user.token[-4:]
         log.info("posting %r to %s (part %s) token=%s", value, url, part, sanitized)
         level = {"a": "1", "b": "2"}[part]
@@ -681,6 +641,7 @@ class Puzzle:
         # check puzzle page for any previously solved answers.
         # if these were solved by typing into the website directly, rather than using
         # aocd submit, then our caches might not know about the answers yet.
+        log.debug(f"check page {self.year}/{self.day:02d} for existing answer ({part})")
         self._request_puzzle_page()
         if answer_path.is_file():
             return answer_path.read_text(encoding="utf-8").strip()
@@ -776,9 +737,16 @@ class Puzzle:
                     _ensure_intermediate_dirs(self.prose0_path)
                     self.prose0_path.write_text(text, encoding="utf-8")
 
-    def _get_prose(self):
+    def _get_prose(self, force_precheck=False):
         # prefer to return full prose (i.e. part b is solved or unlocked)
         # prefer to return prose with answers from same the user id as self.user.id
+        if force_precheck:
+            unlocked_files = [
+                *AOCD_DATA_DIR.glob("*/" + self.prose1_path.name),
+                *AOCD_DATA_DIR.glob("*/" + self.prose2_path.name),
+            ]
+            if not unlocked_files:
+                self._request_puzzle_page()
         for path in self.prose2_path, self.prose1_path:
             if path.is_file():
                 log.debug("_get_prose cache hit %s", path)
@@ -792,7 +760,8 @@ class Puzzle:
             log.debug("_get_prose cache hit %s", self.prose0_path)
             return self.prose0_path.read_text(encoding="utf-8")
         log.debug("_get_prose cache miss year=%d day=%d", self.year, self.day)
-        self._request_puzzle_page()
+        if not force_precheck:
+            self._request_puzzle_page()
         for path in self.prose2_path, self.prose1_path, self.prose0_path:
             if path.is_file():
                 log.debug("_get_prose using %s", path)
@@ -808,7 +777,7 @@ class Puzzle:
         Most puzzles have exactly one Easter egg, but 2018-12-17 had two, so this
         property always returns a list for consistency.
         """
-        txt = self._get_prose()
+        txt = self._get_prose(force_precheck=True)
         soup = _get_soup(txt)
         eggs = soup.find_all(["span", "em", "code"], class_=None, attrs={"title": bool})
         return eggs

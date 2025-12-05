@@ -1,5 +1,8 @@
+import json
+import os
 import sys
 import typing as t
+from collections.abc import Callable
 from functools import partial
 
 from . import _ipykernel
@@ -15,8 +18,8 @@ from . import types
 from . import utils
 from .exceptions import AocdError
 from .get import get_data
-from .get import get_puzzle
 from .get import get_day_and_year
+from .get import get_puzzle
 from .post import submit as _impartial_submit
 
 __all__ = [
@@ -26,6 +29,7 @@ __all__ = [
     "data",
     "examples",
     "exceptions",
+    "extra",
     "get",
     "get_data",
     "models",
@@ -39,8 +43,9 @@ __all__ = [
 
 if t.TYPE_CHECKING:
     data: str
+    extra: dict[str, t.Any]
     puzzle: models.Puzzle
-    submit = _impartial_submit
+    submit: Callable = _impartial_submit
 
 
 def __getattr__(name: str) -> t.Any:
@@ -50,6 +55,8 @@ def __getattr__(name: str) -> t.Any:
     if name == "puzzle":
         day, year = get_day_and_year()
         return get_puzzle(day=day, year=year)
+    if name == "extra":
+        return json.loads(os.environ.get("AOCD_EXTRA", "{}"))
     if name == "submit":
         try:
             day, year = get_day_and_year()
